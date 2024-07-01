@@ -1,9 +1,11 @@
 //! Dependency analysis internals.
 
-use alpm::Db;
 use itertools::Itertools;
+use log::debug;
 use petgraph::{graph::NodeIndex, Directed, Graph};
 use std::collections::HashMap;
+
+use crate::DbLike;
 
 /// A dependency relationship between parent and child.
 pub enum DepType {
@@ -43,13 +45,16 @@ pub struct PkgGraph<'a> {
 
 impl<'a> PkgGraph<'a> {
     /// Create a new `PkgGraph` of given packages and all their dependencies.
-    pub fn by_deps(
-        db: &'a Db,
+    pub fn by_deps<D>(
+        db: &'a D,
         limit: Option<u8>,
         optional: bool,
         foreigns: &'a [&'a str],
         focii: &'a [&'a str],
-    ) -> PkgGraph<'a> {
+    ) -> PkgGraph<'a>
+    where
+        D: DbLike,
+    {
         let mut graph = Graph::default();
         let mut indices = HashMap::new();
 
@@ -65,15 +70,20 @@ impl<'a> PkgGraph<'a> {
     }
 
     /// Create a new `PkgGraph` of given packages and all packages that require them.
-    pub fn by_parents(
-        db: &'a Db,
+    pub fn by_parents<D>(
+        db: &'a D,
         limit: Option<u8>,
         optional: bool,
         foreigns: &'a [&'a str],
         focii: &'a [&'a str],
-    ) -> PkgGraph<'a> {
+    ) -> PkgGraph<'a>
+    where
+        D: DbLike,
+    {
         let mut graph = Graph::default();
         let mut indices = HashMap::new();
+
+        debug!("Focii: {:?}", focii);
 
         for p in focii {
             PkgGraph::add_parent(db, &mut graph, &mut indices, limit, optional, p);
@@ -87,48 +97,54 @@ impl<'a> PkgGraph<'a> {
     }
 
     /// Recursively add dependencies to the package `Graph`.
-    fn add_dep(
-        db: &'a Db,
+    fn add_dep<D>(
+        db: &'a D,
         graph: &mut Graph<(&'a str, Option<Group<'a>>), DepType, Directed, u16>,
         indices: &mut HashMap<&'a str, NodeIndex<u16>>,
         limit: Option<u8>,
         optional: bool,
         parent: &'a str,
-    ) -> Option<NodeIndex<u16>> {
-        indices.get(parent).cloned().or_else(|| {
-            db.pkg(parent).ok().map(|p| {
-                let ix = graph.add_node((parent, p.groups().first()));
-                indices.insert(parent, ix);
-                let next = limit.map(|l| l - 1);
+    ) -> Option<NodeIndex<u16>>
+    where
+        D: DbLike,
+    {
+        let true_pkg = db.get_pkg(parent).ok().or_else(|| db.provides(parent))?;
+        let name = true_pkg.name();
+        debug!("Found {} providing {}", name, parent);
 
-                if next.is_none() || next > Some(0) {
-                    // Dependencies required at runtime.
-                    for d in p.depends().iter() {
-                        if let Some(dix) =
-                            PkgGraph::add_dep(db, graph, indices, next, optional, d.name())
-                        {
-                            graph.add_edge(ix, dix, DepType::Hard);
-                        }
-                    }
+        indices.get(name).cloned().or_else(|| {
+            let ix = graph.add_node((name, true_pkg.groups().first()));
+            debug!("Added {} at {}", name, ix.index());
+            indices.insert(name, ix);
+            let next = limit.map(|l| l - 1);
 
-                    if optional {
-                        for d in p.optdepends().iter() {
-                            if let Some(dix) =
-                                PkgGraph::add_dep(db, graph, indices, next, optional, d.name())
-                            {
-                                graph.add_edge(ix, dix, DepType::Opt);
-                            }
-                        }
+            if next.is_none() || next > Some(0) {
+                // Dependencies required at runtime.
+                for d in true_pkg.depends().iter() {
+                    if let Some(dix) =
+                        PkgGraph::add_dep(db, graph, indices, next, optional, d.name())
+                    {
+                        graph.update_edge(ix, dix, DepType::Hard);
                     }
                 }
 
-                ix
-            })
+                if optional {
+                    for d in true_pkg.optdepends().iter() {
+                        if let Some(dix) =
+                            PkgGraph::add_dep(db, graph, indices, next, optional, d.name())
+                        {
+                            graph.update_edge(ix, dix, DepType::Opt);
+                        }
+                    }
+                }
+            }
+
+            Some(ix)
         })
     }
 
-    fn add_parent(
-        db: &'a Db,
+    fn add_parent<D>(
+        db: &'a D,
         graph: &mut Graph<(&'a str, Option<Group<'a>>), DepType, Directed, u16>,
         indices: &mut HashMap<&'a str, NodeIndex<u16>>,
         limit: Option<u8>,
@@ -136,38 +152,40 @@ impl<'a> PkgGraph<'a> {
         // No lifetime because `required_by` yields owned Strings, which can't
         // have a `'a` lifetime.
         child: &str,
-    ) -> Option<NodeIndex<u16>> {
-        indices.get(child).cloned().or_else(|| {
-            db.pkg(child).ok().map(|p| {
-                // We pull the name back out of the summoned `Package` instead
-                // of using the given `child: &str` to avoid lifetime issues.
-                let name = p.name();
-                let ix = graph.add_node((name, p.groups().first()));
-                indices.insert(name, ix);
-                let next = limit.map(|l| l - 1);
+    ) -> Option<NodeIndex<u16>>
+    where
+        D: DbLike,
+    {
+        let true_pkg = db.get_pkg(child).ok().or_else(|| db.provides(child))?;
+        let name = true_pkg.name();
+        debug!("Found {} providing {}", name, child);
 
-                if next.is_none() || next > Some(0) {
-                    for parent in p.required_by() {
-                        if let Some(pix) =
-                            PkgGraph::add_parent(db, graph, indices, next, optional, &parent)
-                        {
-                            graph.add_edge(pix, ix, DepType::Hard);
-                        }
-                    }
+        indices.get(name).cloned().or_else(|| {
+            let ix = graph.add_node((name, true_pkg.groups().first()));
+            indices.insert(name, ix);
+            let next = limit.map(|l| l - 1);
 
-                    if optional {
-                        for parent in p.optional_for() {
-                            if let Some(pix) =
-                                PkgGraph::add_parent(db, graph, indices, next, optional, &parent)
-                            {
-                                graph.add_edge(pix, ix, DepType::Opt);
-                            }
-                        }
+            if next.is_none() || next > Some(0) {
+                for parent in true_pkg.required_by() {
+                    if let Some(pix) =
+                        PkgGraph::add_parent(db, graph, indices, next, optional, &parent)
+                    {
+                        graph.update_edge(pix, ix, DepType::Hard);
                     }
                 }
 
-                ix
-            })
+                if optional {
+                    for parent in true_pkg.optional_for() {
+                        if let Some(pix) =
+                            PkgGraph::add_parent(db, graph, indices, next, optional, &parent)
+                        {
+                            graph.update_edge(pix, ix, DepType::Opt);
+                        }
+                    }
+                }
+            }
+
+            Some(ix)
         })
     }
 }
@@ -182,7 +200,7 @@ impl std::fmt::Display for PkgGraph<'_> {
             .node_indices()
             .filter_map(|ix| graph.node_weight(ix).map(|(name, group)| (ix, name, group)))
             .sorted_by(|a, b| a.2.cmp(b.2))
-            .group_by(|triple| triple.2)
+            .chunk_by(|triple| triple.2)
             .into_iter()
             .enumerate()
         {

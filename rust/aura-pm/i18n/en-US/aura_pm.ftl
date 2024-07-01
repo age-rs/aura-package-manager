@@ -1,44 +1,64 @@
 language-name = English
 
 # AUR Packages (-A)
-A-install-unreal = { $pkg } is not a real package.
-A-install-cloning = Cloning new packages...
-A-install-pulling = Pulling known packages...
-A-install-deps = Resolving dependencies...
+# install_5
+A-install-deps = Determining dependencies...
+# reportPkgsToInstall_1
 A-install-repo-pkgs = Repository dependencies:
+# reportPkgsToInstall_2
 A-install-aur-pkgs = AUR packages:
 A-install-path-comp = Failed to extract final component of: { $path }
+# confirmIgnored_1
+A-install-ignored = { $file } is marked "ignored". Install anyway?
 
 A-build-prep = Preparing build directories...
+# buildPackages_1
 A-build-pkg = Building { $pkg }...
 A-build-diff = Display diffs of build files?
 A-build-hotedit-pkgbuild = Edit the PKGBUILD?
+# hotEdit_2
 A-build-hotedit-install = Edit the .install file?
+# buildFail_5
 A-build-fail = Package failed to build, citing:
+A-build-e-pkgctl = Building within an isolated chroot failed.
+# buildFail_8
 A-build-e-makepkg = makepkg failed.
 A-build-e-edit = Failed to edit: { $file }
 A-build-e-tarball = Failed to move: { $file }
 A-build-e-filename = Failed to extract filename from: { $file }
 A-build-e-copies = Failed to copy build files.
 A-build-pkglist = Failed to determine makepkg output paths from: { $dir }
+# buildFail_12
 A-build-pull = Failed to pull latest commits - you may be building an old version!
+# buildFail_6
 A-build-continue = Continue building other packages?
 
+# repository
 A-i-repo = Repository
+# version
 A-i-version = Version
+# aurStatus
 A-i-status = AUR Status
+# maintainer
 A-i-maintainer = Maintainer
+# projectUrl
 A-i-proj-url = Project URL
+# aurUrl
 A-i-aur-url = AUR URL
+# license
 A-i-license = License
 A-i-group = Groups
 A-i-provides = Provides
+# dependsOn
 A-i-depends = Depends On
 A-i-make = Make Deps
 A-i-opt = Optional Deps
 A-i-check = Check Deps
+# votes
 A-i-votes = Votes
+# popularity
 A-i-pop = Popularity
+# description
 A-i-desc = Description
 A-i-keywords = Keywords
 A-i-submitted = Submitted
@@ -55,7 +75,6 @@ A-u-to-upgrade = AUR packages to upgrade:
 A-u-git = VCS packages to rebuild:
 
 A-w = Cloning { $package }...
-A-w-fail = Failed to clone the following packages:
 
 A-y-refreshing = Refreshing local clones of installed AUR packages...
 A-y = Failed to pull the following packages:
@@ -85,6 +104,7 @@ C-i-avail = Available Versions
 
 # cleanCache_3 + 4
 C-c-keep = { $pkgs } of each package file will be kept. The rest will be deleted.
+# cleanCache_8 but remove "megabytes".
 C-c-freed = { $bytes } freed.
 
 # getDowngradeChoice_1
@@ -94,23 +114,34 @@ C-y-no-work = Package cache already synchronized.
 C-y-which-cache = Which cache should receive the downloaded tarballs?
 C-t-invalids = Removing invalid package tarballs.
 
-# Orphans (-O)
-O-abandon = The following orphans and their dependencies will be removed:
-O-adopt = { $pkg } now marked as explicitly installed.
-O-explicit-err = Failed to mark { $pkg } as explicitly installed.
-
 # Logs (-L)
+# firstInstall
 L-first = First Install
+# upgrades
 L-upgrades = Upgrades
+# recentActions
 L-recent = Recent Actions
 L-search-err = Searching your logs via { $cmd } failed.
 L-view-err = Failed to open your ALPM log.
+
+# Orphans (-O)
+O-adopt = { $pkg } now marked as explicitly installed.
+O-explicit-err = Failed to mark { $pkg } as explicitly installed.
 
 # Opening Pages (open)
 open-err = Failed to open { $url }.
 
 # System Statistics (stats)
 stats-local = Failed to load language data.
+stats-host = Host
+stats-user = User
+stats-distro = Distribution
+stats-editor = Editor
+stats-pkgs = Installed packages
+stats-aura-cache = Aura Package Cache
+stats-pacman-cache = Pacman Package Cache
+stats-aura-build = Aura Build Cache
+stats-tmp = /tmp Directory
 
 # System Validation (check)
 check-start = Validating your system.
@@ -120,9 +151,17 @@ check-env-editor = EDITOR variable set?
 check-env-editor-exec = EDITOR value ({ $exec }) is executable?
 check-env-editor-vi = Backup editor vi is executable?
 check-env-installed = { $exec } installed and executable?
+check-env-lang = { $cmd } contains LANG value? ({ $lang })
+check-env-lang-fix = Fix: Update your { $file } to include { $lang }.
+check-env-lang-fix2 = Fix: Set your LANG variable!
+check-env-lang-known = Aura is localised to your LANG?
+check-env-java-bin = Java tooling installed?
+check-env-java-bin-fix = Fix: Considering installing { $pkg }.
+check-env-java-set = Java environment set?
+check-env-java-set-fix = Fix: See { $cmd }.
 check-pconf = Pacman Configuration (/etc/pacman.conf)
 check-pconf-par = Parallel downloads activated?
-check-pconf-par-fix = { $setting } is off, or set to 1. Set { $set } for faster tarball fetching.
+check-pconf-par-fix = Fix: { $setting } is off, or set to 1. Set { $set } for faster tarball fetching.
 check-pconf-ignores = No overlapping ignored packages?
 check-pconf-ignores-fix = The following packages are ignored in both pacman.conf and aura.toml: { $pkgs }
 check-pconf-pacnew = All .pacnew files accounted for?
@@ -137,15 +176,15 @@ check-aconf = Aura Configuration
 check-aconf-aura-exists = Aura config file exists?
 check-aconf-aura-exists-fix = Fix: Consider { $cmd }
 check-aconf-aura-parse = Aura config file can be parsed?
+check-aconf-old-dirs = No old Aura directories exist?
+check-aconf-old-conf = No old Aura config files exist?
 check-mconf = Makepkg Configuration (/etc/makepkg.conf)
 check-mconf-packager = PACKAGER set?
-check-mconf-packager-fix = Set { $cmd } within /etc/makepkg.conf
+check-mconf-packager-fix = Fix: Set { $cmd } within /etc/makepkg.conf
 check-snapshots = Package Snapshots
-check-snapshots-unreadable = Unable to read snapshot path: { $path }
 check-snapshot-usable = All snapshots have corresponding tarballs?
 check-snapshot-usable-fix = Fix: You can remove old/unusable snapshots with { $command }
 check-cache = Package Tarball Caches
-check-cache-unreadable = Unable to read cache path: { $path }
 check-cache-exists = All specified caches exist?
 check-cache-tarballs = All tarballs valid?
 check-cache-tarballs-fix = Fix: You can remove invalid tarballs with { $command }
@@ -153,12 +192,24 @@ check-cache-missing = Every installed official package has a tarball?
 check-cache-missing-fix = Fix: You can download missing official tarballs with { $command }
 check-cache-missing-for = Every installed AUR package has a tarball?
 check-cache-missing-for-fix = Fix: View the missing packages with { $cmd } and reinstall them manually.
+check-pkgs = Package Status
+check-pkgs-old = All explicitly installed, non-dep packages are up to date?
+check-pkgs-old-warn = { $pkg } was last updated { $days } ago.
+
+# Thanks
+thanks-you = Thank you for using Aura.
+thanks-colin = Aura by Colin Woodbury, 2012 - 2024
+thanks-pacman = Thank you to the Pacman and Arch Linux teams for providing a solid foundation.
+thanks-everyone = Thank you to Aura's contributors, donators, and users.
+thanks-logo = Aura's logo by Cristiano Vitorino.
+thanks-translators = Aura is localised by:
 
 # Configuration (conf)
 conf-toml-err = Failed to serialize current config.
 
 # Runtime Environment
 env-missing-editor = Provided EDITOR is not on the PATH.
+# confParsing_1
 env-pconf = Failed to parse your pacman.conf file.
 
 # Pacman Calls
@@ -187,14 +238,14 @@ git-clone = A git clone failed: { $dir }
 git-io = Calling git somehow failed.
 
 # Faur Calls
-faur-fetch = Calling the Faur utterly failed: { $pkg }
+faur-fetch = Calling the metadata server utterly failed: { $pkg }
 faur-unknown = Unknown package: { $pkg }
 faur-too-many = More results returned from Faur than expected: { $pkg }
 
 # Common Errors
 err-alpm = Failed to open ALPM handle.
 err-config-path = Failed to determine the path to Aura's config file.
-err-curl = A CURL transaction failed.
+err-curl = A CURL transaction failed: { $err }
 err-file-del = Failed to delete: { $file }
 err-file-open = Failed to open file handle to: { $file }
 err-file-write = Failed to write file: { $file }
@@ -209,24 +260,25 @@ err-srcinfo = Failed to parse .SRCINFO: { $file }
 err-sudo = Failed to raise privileges.
 err-time-conv = Failed to convert a timestamp.
 err-time-format = Failed to format a time string.
-err-time-local = Failed to determine local time.
 err-user-input = Failed to get user input.
 err-utf8 = A UTF-8 conversion failed.
 err-write = Somehow failed to write to stdout.
 
 # Common Fields
+# yesPattern
 common-yes = Yes
 common-no = No
-common-none = None
+# name
 common-name = Name
 common-done = Done.
 common-total = Total
 common-no-packages = No packages specified.
-common-no-valid = No valid packages specified.
 common-no-work = Nothing to do.
 common-cancelled = Action cancelled.
+common-replace = You can delete { $old } in favour of { $new }.
 
 # Misc.
 proceed = Proceed?
-proceed-yes = [Y/n]
-proceed-no = [y/N]
+proceed-affirmative = y
+proceed-affirmative-alt = Y
+proceed-negative = n

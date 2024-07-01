@@ -2,23 +2,29 @@
 
 use crate::dirs;
 use crate::error::Nested;
-use crate::localization::Localised;
+use crate::localization::{identifier_from_locale, Localised};
+use crate::makepkg::Makepkg;
 use from_variants::FromVariants;
 use i18n_embed_fl::fl;
-use log::error;
+use log::{debug, error, warn};
 use r2d2::Pool;
 use r2d2_alpm::{Alpm, AlpmManager};
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
+use std::ops::Not;
 use std::path::{Path, PathBuf};
+use unic_langid::LanguageIdentifier;
 
 const DEFAULT_EDITOR: &str = "vi";
 
 #[derive(FromVariants)]
 pub(crate) enum Error {
     Dirs(crate::dirs::Error),
+    #[from_variants(skip)]
     PConf(pacmanconf::Error),
+    #[from_variants(skip)]
     Alpm(alpm::Error),
+    #[from_variants(skip)]
     R2d2(r2d2::Error),
     MissingEditor,
 }
@@ -57,10 +63,18 @@ struct RawEnv {
 impl RawEnv {
     /// Attempt to read and parse settings from the filesystem.
     fn try_new() -> Option<Self> {
-        let config: PathBuf = dirs::aura_config().ok()?;
+        let config: PathBuf = {
+            let c = dirs::aura_config().ok()?;
+            if c.is_file() {
+                c
+            } else {
+                dirs::aura_config_old().ok()?
+            }
+        };
+
+        debug!("Reading: {}", config.display());
         let s = std::fs::read_to_string(config).ok()?;
-        let e = toml::from_str(&s).ok()?;
-        Some(e)
+        toml::from_str(&s).ok()
     }
 }
 
@@ -83,6 +97,9 @@ pub(crate) struct Env {
     /// Settings from a `pacman.conf`.
     #[serde(skip_serializing)]
     pub(crate) pacman: pacmanconf::Config,
+    /// Settings from a `makepkg.conf`.
+    #[serde(skip_serializing)]
+    pub(crate) makepkg: Option<Makepkg>,
 }
 
 impl Env {
@@ -99,24 +116,43 @@ impl Env {
             None => (None, None, None),
         };
 
+        let makepkg = match crate::makepkg::Makepkg::new() {
+            Ok(m) => Some(m),
+            Err(e) => {
+                warn!("Unable to parse makepkg.conf: {e}");
+                None
+            }
+        };
+
         let e = Env {
             general: general.unwrap_or_default(),
             aur: aur.unwrap_or_else(Aur::try_default)?,
             backups: backups.unwrap_or_else(Backups::try_default)?,
             pacman: pacmanconf::Config::new().map_err(Error::PConf)?,
+            makepkg,
         };
 
         Ok(e)
     }
 
+    /// The "sudo string" to be prefixed to certain shell calls.
+    pub(crate) fn sudo(&self) -> &'static str {
+        if self.general.doas {
+            "doas"
+        } else {
+            "sudo"
+        }
+    }
+
     /// Open a series of connections to ALPM handles. The quantity matches the
     /// number of CPUs available on the machine.
     pub(crate) fn alpm_pool(&self) -> Result<Pool<AlpmManager>, Error> {
-        // FIXME Thu Jun  9 13:53:49 2022
-        //
-        // Unfortunate clone here.
+        // FIXME Thu Jun  9 2022 Unfortunate clone here.
         let mngr = AlpmManager::new(self.pacman.clone());
-        let pool = Pool::builder().max_size(self.general.cpus).build(mngr)?;
+        let pool = Pool::builder()
+            .max_size(self.general.cpus)
+            .build(mngr)
+            .map_err(Error::R2d2)?;
 
         Ok(pool)
     }
@@ -142,9 +178,15 @@ impl Env {
     }
 
     /// Allow CLI flags to override settings from `aura.toml`.
-    pub(crate) fn reconcile_cli(&mut self, flags: &aura_pm::flags::SubCmd) {
-        if let aura_pm::flags::SubCmd::Aur(a) = flags {
-            self.aur.reconcile(a)
+    pub(crate) fn reconcile_cli(&mut self, flags: &aura_pm::flags::Args) {
+        if let aura_pm::flags::SubCmd::Aur(a) = &flags.subcmd {
+            self.aur.reconcile(self.makepkg.as_ref(), a)
+        }
+
+        // Specifying a language on the command line overrides all other
+        // settings.
+        if let Some(l) = flags.language() {
+            self.general.language = l;
         }
     }
 
@@ -158,16 +200,20 @@ impl Env {
     }
 }
 
-#[derive(Deserialize)]
+#[derive(Debug, Deserialize)]
 struct RawGeneral {
     cpus: Option<u32>,
     editor: Option<String>,
+    doas: Option<bool>,
+    language: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
 pub(crate) struct General {
     pub(crate) cpus: u32,
     pub(crate) editor: String,
+    pub(crate) doas: bool,
+    pub(crate) language: LanguageIdentifier,
 }
 
 impl Default for General {
@@ -175,6 +221,8 @@ impl Default for General {
         Self {
             cpus: num_cpus::get() as u32,
             editor: editor(),
+            doas: false,
+            language: aura_pm::ENGLISH,
         }
     }
 }
@@ -184,6 +232,15 @@ impl From<RawGeneral> for General {
         General {
             cpus: raw.cpus.unwrap_or_else(|| num_cpus::get() as u32),
             editor: raw.editor.unwrap_or_else(editor),
+            doas: raw.doas.unwrap_or(false),
+            // Precedence: We check config first for a language setting. If
+            // nothing, we check the environment. If nothing, we fall back to
+            // English. This can further be overridden by CLI flags.
+            language: raw
+                .language
+                .or_else(|| std::env::var("LANG").ok())
+                .and_then(identifier_from_locale)
+                .unwrap_or(aura_pm::ENGLISH),
         }
     }
 }
@@ -199,6 +256,8 @@ struct RawAur {
     cache: Option<PathBuf>,
     clones: Option<PathBuf>,
     hashes: Option<PathBuf>,
+    #[serde(default)]
+    chroot: HashSet<String>,
     #[serde(default)]
     ignores: HashSet<String>,
     #[serde(default)]
@@ -221,6 +280,9 @@ pub(crate) struct Aur {
     pub(crate) cache: PathBuf,
     pub(crate) clones: PathBuf,
     pub(crate) hashes: PathBuf,
+    /// Packages to build via `pkgctl build`.
+    pub(crate) chroot: HashSet<String>,
+    /// Packages to ignore entirely.
     pub(crate) ignores: HashSet<String>,
     /// Always rebuild VCS packages with `-Au`?
     pub(crate) git: bool,
@@ -245,6 +307,7 @@ impl Aur {
             cache: dirs::tarballs()?,
             clones: dirs::clones()?,
             hashes: dirs::hashes()?,
+            chroot: HashSet::new(),
             ignores: HashSet::new(),
             git: false,
             hotedit: false,
@@ -259,7 +322,7 @@ impl Aur {
 
     /// Flags set on the command line should override config settings and other
     /// defaults.
-    fn reconcile(&mut self, flags: &aura_pm::flags::Aur) {
+    fn reconcile(&mut self, makepkg: Option<&Makepkg>, flags: &aura_pm::flags::Aur) {
         // NOTE 2023-11-26 It may be tempting to save two lines here by blindly
         // setting `self.git` to whatever is found in the `flags` value, but
         // that would cause problems in the case of `true` being set in config,
@@ -284,7 +347,10 @@ impl Aur {
             self.noconfirm = true;
         }
 
-        if flags.nocheck {
+        // NOTE If `check` were found in `makepkg.conf`, then the flag should
+        // override it. If `!check` were found or there were nothing, then the
+        // flag agrees with it and `false` is taken.
+        if flags.nocheck || makepkg.map(|m| m.check.not()).unwrap_or(false) {
             self.nocheck = true;
         }
 
@@ -308,6 +374,7 @@ impl TryFrom<RawAur> for Aur {
             cache,
             clones,
             hashes,
+            chroot: raw.chroot,
             ignores: raw.ignores,
             git: raw.git,
             hotedit: raw.hotedit,
@@ -324,11 +391,19 @@ impl TryFrom<RawAur> for Aur {
 #[derive(Deserialize)]
 struct RawBackups {
     snapshots: Option<PathBuf>,
+
+    #[serde(default = "on_by_default")]
+    automatic: bool,
+}
+
+fn on_by_default() -> bool {
+    true
 }
 
 #[derive(Debug, Serialize)]
 pub(crate) struct Backups {
     pub(crate) snapshots: PathBuf,
+    pub(crate) automatic: bool,
 }
 
 impl Backups {
@@ -336,7 +411,9 @@ impl Backups {
     fn try_default() -> Result<Self, dirs::Error> {
         let g = Backups {
             snapshots: dirs::snapshot()?,
+            automatic: true,
         };
+
         Ok(g)
     }
 }
@@ -345,10 +422,12 @@ impl TryFrom<RawBackups> for Backups {
     type Error = dirs::Error;
 
     fn try_from(raw: RawBackups) -> Result<Self, Self::Error> {
-        let snapshots = raw.snapshots.map(Ok).unwrap_or_else(dirs::snapshot)?;
-        let g = Backups { snapshots };
+        let b = Backups {
+            snapshots: raw.snapshots.map(Ok).unwrap_or_else(dirs::snapshot)?,
+            automatic: raw.automatic,
+        };
 
-        Ok(g)
+        Ok(b)
     }
 }
 

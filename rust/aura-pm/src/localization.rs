@@ -11,29 +11,88 @@ use rust_embed::RustEmbed;
 use std::collections::HashMap;
 use unic_langid::LanguageIdentifier;
 
+pub(crate) const TRANSLATORS: &[(&str, &str)] = &[
+    ("Arabic", "\"Array in a Matrix\""),
+    ("Chinese", "Kai Zhang / Alex3236"),
+    ("Croatian", "Denis Kasak / \"stranac\""),
+    ("Czech", "Daniel Rosel"),
+    ("Dutch", "Joris Blanken / Heimen Stoffels"),
+    ("Esperanto", "Zachary Matthews"),
+    ("French", "Ma Jiehong / Fabien Dubosson"),
+    ("German", "Lukas Niederbremer / Jonas Platte"),
+    ("Hindi", "@yozachar"),
+    ("Indonesia", "\"pak tua Greg\""),
+    ("Italian", "Bob Valantin / Cristian Tentella"),
+    ("Japanese", "Onoue Takuro / Colin Woodbury"),
+    ("Korean", "\"Nioden\""),
+    ("Norwegian", "\"chinatsun\""),
+    ("Polish", "Chris Warrick / Michał Kurek"),
+    (
+        "Portuguese",
+        "Henry Kupty / Thiago Perrotta / Wagner Amaral",
+    ),
+    ("Romanian", "90 / benone"),
+    ("Russian", "Kyrylo Silin / Alexey Kotlyarov"),
+    ("Serbian", "Filip Brcic"),
+    ("Spanish", "Alejandro Gómez / Sergio Conde / Max Ferrer"),
+    ("Swedish", "Fredrik Haikarainen / Daniel Beecham"),
+    ("Turkish", "Cihan Alkan"),
+    ("Ukrainian", "Andriy Cherniy"),
+    ("Vietnamese", "\"Kritiqual\""),
+];
+
 #[derive(RustEmbed)]
 #[folder = "i18n"]
 struct Translations;
 
-// TODO Pull `LANG`, etc., variables from the environment myself. There are
-// libraries that do this, but they incur heavy dependencies.
+/// Parsing of [`LanguageIdentifier`]s that we are known to support.
+pub(crate) fn identifier_from_locale<S>(locale: S) -> Option<LanguageIdentifier>
+where
+    S: AsRef<str>,
+{
+    match code_and_country(locale.as_ref()) {
+        ("en", _) => Some(aura_pm::ENGLISH),
+        ("ja", _) => Some(aura_pm::JAPANESE),
+        ("pl", _) => Some(aura_pm::POLISH),
+        ("hr", _) => Some(aura_pm::CROATIAN),
+        ("sv", _) => Some(aura_pm::SWEDISH),
+        ("de", _) => Some(aura_pm::GERMAN),
+        ("es", _) => Some(aura_pm::SPANISH),
+        ("pt", _) => Some(aura_pm::PORTUGUESE),
+        ("fr", _) => Some(aura_pm::FRENCH),
+        ("ru", _) => Some(aura_pm::RUSSIAN),
+        ("it", _) => Some(aura_pm::ITALIAN),
+        ("sr", _) => Some(aura_pm::SERBIAN),
+        ("no", _) => Some(aura_pm::NORWEGIAN),
+        ("id", _) => Some(aura_pm::INDONESIAN),
+        // Mainland China.
+        ("zh", Some("CN")) => Some(aura_pm::SIMPLIFIED_CHINESE),
+        ("eo", _) => Some(aura_pm::ESPERANTO),
+        ("nl", _) => Some(aura_pm::DUTCH),
+        ("tr", _) => Some(aura_pm::TURKISH),
+        ("uk", _) => Some(aura_pm::UKRAINIAN),
+        ("ro", _) => Some(aura_pm::ROMANIAN),
+        ("vi", _) => Some(aura_pm::VIETNAMESE),
+        ("cs", _) => Some(aura_pm::CZECH),
+        ("ko", _) => Some(aura_pm::KOREAN),
+        ("hi", _) => Some(aura_pm::HINDI),
+        _ => None,
+    }
+}
 
-// TODO
-// pl-PL Polish
-// hr-HR Crotian
-// sv-SE Swedish
-// de-DE German
-// es-ES Spanish
-// pt-PT Portuguese
-// fr-FR French
-// ru-RU Russian
-// it-IT Italian
-// sr-SP Serbian
-// nb-NO Norwegian
-// id-ID Indonesian
-// zh-CN Chinese
-// nl-NL Dutch
-// ??? Esperanto ???
+/// Convert from the format found in `/etc/locale.gen`, `locale -a`, or `LANG`
+/// to the format parsable by us to produce [`LanguageIdentifier`]s.
+pub(crate) fn code_and_country(locale: &str) -> (&str, Option<&str>) {
+    let lokale = match locale.split_once('.') {
+        Some((loc, _)) => loc,
+        _ => locale,
+    };
+
+    match lokale.split_once(['-', '_']) {
+        Some((l, c)) => (l, Some(c)),
+        None => (lokale, None),
+    }
+}
 
 /// Any type whose contents can be localised in a meaningful way.
 pub(crate) trait Localised {
@@ -84,9 +143,7 @@ where
                 [fl!(fll, "dep-multi"), "".to_string()]
                     .into_iter()
                     .chain(iter)
-                    // FIXME Thu Jun 23 10:21:03 2022
-                    //
-                    // Use built-in `intersperse` once it stabilizes.
+                    // FIXME Thu Jun 23 2022 Use built-in `intersperse` once it stabilizes.
                     .apply(|i| itertools::intersperse(i, "\n".to_string()))
                     .collect()
             }
@@ -168,5 +225,12 @@ mod test {
                 }
             })
         }
+    }
+
+    #[test]
+    fn locale_parsing() {
+        assert_eq!(("en", Some("US")), code_and_country("en_US.UTF-8"));
+        assert_eq!(("en", Some("US")), code_and_country("en-US.UTF-8"));
+        assert_eq!(("en", None), code_and_country("en"));
     }
 }

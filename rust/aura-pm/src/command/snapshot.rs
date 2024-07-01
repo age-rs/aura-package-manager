@@ -1,5 +1,6 @@
 //! All functionality involving the `-B` command.
 
+use crate::env::Env;
 use crate::error::Nested;
 use crate::localization::Localised;
 use crate::utils::{PathStr, NOTHING};
@@ -23,6 +24,7 @@ use time::macros::format_description;
 pub(crate) enum Error {
     Dirs(crate::dirs::Error),
     Pacman(crate::pacman::Error),
+    #[from_variants(skip)]
     Readline(rustyline::error::ReadlineError),
     #[from_variants(skip)]
     JsonWrite(PathBuf, serde_json::Error),
@@ -30,7 +32,7 @@ pub(crate) enum Error {
     DeleteFile(PathBuf, std::io::Error),
     #[from_variants(skip)]
     OpenFile(PathBuf, std::io::Error),
-    TimeLocal(time::error::IndeterminateOffset),
+    #[from_variants(skip)]
     TimeFormat(time::error::Format),
     Cancelled,
     NoSnapshots,
@@ -47,7 +49,6 @@ impl Nested for Error {
             Error::OpenFile(_, e) => error!("{e}"),
             Error::Cancelled => {}
             Error::NoSnapshots => {}
-            Error::TimeLocal(e) => error!("{e}"),
             Error::TimeFormat(e) => error!("{e}"),
         }
     }
@@ -64,7 +65,6 @@ impl Localised for Error {
             Error::NoSnapshots => fl!(fll, "B-none"),
             Error::DeleteFile(p, _) => fl!(fll, "err-file-del", file = p.utf8()),
             Error::OpenFile(p, _) => fl!(fll, "err-file-open", file = p.utf8()),
-            Error::TimeLocal(_) => fl!(fll, "err-time-local"),
             Error::TimeFormat(_) => fl!(fll, "err-time-format"),
         }
     }
@@ -82,10 +82,13 @@ struct StateDiff<'a> {
 }
 
 pub(crate) fn save(fll: &FluentLanguageLoader, alpm: &Alpm, snapshots: &Path) -> Result<(), Error> {
-    let snap = Snapshot::from_alpm(alpm)?;
+    let snap = Snapshot::from_alpm(alpm);
     let form =
         format_description!("[year].[month]([month repr:short]).[day].[hour].[minute].[second]");
-    let name = format!("{}.json", snap.time.format(form)?);
+    let name = format!(
+        "{}.json",
+        snap.time.format(form).map_err(Error::TimeFormat)?
+    );
     let path = snapshots.join(name);
 
     let file = BufWriter::new(File::create(&path).map_err(|e| Error::OpenFile(path.clone(), e))?);
@@ -123,13 +126,10 @@ pub(crate) fn list(snapshots: &Path) -> Result<(), Error> {
     Ok(())
 }
 
-pub(crate) fn restore(
-    fll: &FluentLanguageLoader,
-    alpm: &Alpm,
-    caches: &[&Path],
-    snapshots: &Path,
-) -> Result<(), Error> {
-    let vers = aura_core::cache::all_versions(caches);
+pub(crate) fn restore(env: &Env, fll: &FluentLanguageLoader, alpm: &Alpm) -> Result<(), Error> {
+    let caches = env.caches();
+    let snapshots = &env.backups.snapshots;
+    let vers = aura_core::cache::all_versions(&caches);
 
     let mut shots: Vec<_> = aura_core::snapshot::snapshots(snapshots)
         .filter(|ss| ss.usable(&vers))
@@ -144,19 +144,24 @@ pub(crate) fn restore(
     aura!(fll, "B-select");
     for (i, ss) in shots.iter().enumerate() {
         let form = format_description!("[year]-[month]-[day] [hour]-[minute]-[second]");
-        let time = ss.time.format(form)?;
+        let time = ss.time.format(form).map_err(Error::TimeFormat)?;
         let pinned = ss.pinned.then(|| "[pinned]".cyan()).unwrap_or_default();
         println!(" {:w$}) {} {}", i, time, pinned, w = digits);
     }
 
-    let index = crate::utils::select(">>> ", shots.len() - 1)?;
-    restore_snapshot(alpm, caches, shots.remove(index))?;
+    let index = crate::utils::select(">>> ", shots.len() - 1).map_err(Error::Readline)?;
+    restore_snapshot(env, alpm, &caches, shots.remove(index))?;
 
     green!(fll, "common-done");
     Ok(())
 }
 
-fn restore_snapshot(alpm: &Alpm, caches: &[&Path], snapshot: Snapshot) -> Result<(), Error> {
+fn restore_snapshot(
+    env: &Env,
+    alpm: &Alpm,
+    caches: &[&Path],
+    snapshot: Snapshot,
+) -> Result<(), Error> {
     let installed: HashMap<&str, &str> = alpm
         .as_ref()
         .localdb()
@@ -179,12 +184,12 @@ fn restore_snapshot(alpm: &Alpm, caches: &[&Path], snapshot: Snapshot) -> Result
             })
             .map(|pp| pp.into_pathbuf().into_os_string());
 
-        crate::pacman::sudo_pacman("-U", NOTHING, tarballs)?;
+        crate::pacman::sudo_pacman(env, "-U", NOTHING, tarballs)?;
     }
 
     // Remove packages that weren't installed within the chosen snapshot.
     if diff.to_remove.is_empty().not() {
-        crate::pacman::sudo_pacman("-R", NOTHING, diff.to_remove)?;
+        crate::pacman::sudo_pacman(env, "-R", NOTHING, diff.to_remove)?;
     }
 
     Ok(())

@@ -36,7 +36,7 @@ impl Localised for Error {
 }
 
 /// Like [`xdg_cache`], but for `XDG_CONFIG_HOME`.
-fn xdg_config() -> Result<PathBuf, Error> {
+pub(crate) fn xdg_config() -> Result<PathBuf, Error> {
     std::env::var("XDG_CONFIG_HOME")
         .map(PathBuf::from)
         .or_else(|_| std::env::var("HOME").map(|h| [&h, ".config"].iter().collect()))
@@ -45,6 +45,11 @@ fn xdg_config() -> Result<PathBuf, Error> {
 
 /// The location of Aura's config file.
 pub(crate) fn aura_config() -> Result<PathBuf, Error> {
+    xdg_config().map(|p| p.join("aura").join("config.toml"))
+}
+
+/// The previous location of Aura's config file.
+pub(crate) fn aura_config_old() -> Result<PathBuf, Error> {
     xdg_config().map(|p| p.join("aura.toml"))
 }
 
@@ -62,7 +67,7 @@ fn xdg_cache() -> Result<PathBuf, Error> {
 }
 
 /// The full path to the Aura cache.
-fn aura_xdg_cache() -> Result<PathBuf, Error> {
+pub(crate) fn aura_xdg_cache() -> Result<PathBuf, Error> {
     let cache = xdg_cache()?.join("aura");
     Ok(cache)
 }

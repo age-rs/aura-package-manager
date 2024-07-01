@@ -76,7 +76,7 @@ fn info_work(
 
     for e in pks
         .into_iter()
-        .filter_map(|p| aura_core::log::info(path, p))
+        .filter_map(|p| aura_core::logs::info(path, p))
     {
         let pairs: Vec<(&str, ColoredString)> = vec![
             (&p, e.package.normal()),
@@ -110,10 +110,8 @@ fn view_work(path: &Path, before: Option<Date>, after: Option<Date>) -> Result<(
             .chars()
             .skip(1)
             .take(10)
-            // FIXME Fri Jun 24 11:22:42 2022
-            //
-            // Avoid this collect somehow. Couldn't it be done with a slice
-            // range, or does UTF-8 mess that up?
+            // FIXME Fri Jun 24 2022 Avoid this collect somehow.
+            // Couldn't it be done with a slice range, or does UTF-8 mess that up?
             .collect::<String>()
             .parse::<Date>()
         {

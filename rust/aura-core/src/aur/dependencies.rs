@@ -110,6 +110,16 @@ impl Resolution {
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Official(String);
 
+impl Official {
+    /// Construct an `Official`.
+    pub fn new<S>(s: S) -> Self
+    where
+        S: Into<String>,
+    {
+        Official(s.into())
+    }
+}
+
 impl Borrow<str> for Official {
     fn borrow(&self) -> &str {
         self.0.as_ref()
@@ -133,7 +143,7 @@ impl std::fmt::Display for Official {
 pub struct Buildable {
     /// The name of the AUR package.
     pub name: String,
-    /// The names of its dependencies.
+    /// The names of its dependencies, both official and AUR.
     pub deps: HashSet<String>,
 }
 
@@ -169,6 +179,25 @@ impl Hash for Buildable {
     }
 }
 
+fn confirm_base_devel<M, E>(pool: Pool<M>, mutx: Arc<Mutex<Resolution>>) -> Result<(), Error<E>>
+where
+    M: ManageConnection<Connection = Alpm>,
+{
+    let alpm = pool.get()?;
+    let db = alpm.alpm.localdb();
+
+    if db.pkg("base-devel").is_err() {
+        let p = Official::new("base-devel");
+
+        mutx.lock()
+            .map_err(|_| Error::PoisonedMutex)?
+            .to_install
+            .insert(p);
+    }
+
+    Ok(())
+}
+
 /// Determine all packages to be built and installed.
 pub fn resolve<'a, I, M, F, E>(
     pool: Pool<M>,
@@ -184,6 +213,11 @@ where
     E: Send,
 {
     let arc = Arc::new(Mutex::new(Resolution::default()));
+
+    // The Arch Wiki states that `base-devel` is to be considered an implicit
+    // (make-)dependency of every other package. Here we add it automatically if
+    // the user doesn't have it installed.
+    confirm_base_devel(pool.clone(), arc.clone())?;
 
     // The original packages we asked to have installed. These should not be
     // immediately counted as "satisfied" (and thus skipped) by the dependency
@@ -212,6 +246,7 @@ where
     Ok(res)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn resolve_one<M, F, E>(
     pool: Pool<M>,
     mutx: Arc<Mutex<Resolution>>,
@@ -272,8 +307,7 @@ where
                     mutx.lock()
                         .map_err(|_| Error::PoisonedMutex)?
                         .to_install
-                        .insert(Official(prnt.clone()))
-                        .disown();
+                        .insert(Official::new(&prnt));
 
                     // Since this is an official, prebuilt package, we don't
                     // need to consider its makedeps or checkdeps.
@@ -283,7 +317,7 @@ where
                         .map(|d| d.name().to_string())
                         .collect();
 
-                    // FIXME Fri Feb 18 15:07:23 2022
+                    // FIXME Fri Feb 18 2022 Avoid manual drops.
                     //
                     // Manual drops are a signal of bad design. For the moment
                     // these are necessary to avoid running out of ALPM handles
@@ -301,9 +335,7 @@ where
                         .map_err(|es| Error::Resolutions(Box::new(es)))?;
                 }
                 None => {
-                    // FIXME Fri Feb 18 15:13:31 2022
-                    //
-                    // Same here as above.
+                    // FIXME Fri Feb 18 2022 Same here as above.
                     drop(alpm);
 
                     debug!("{} is an AUR package.", pr);
@@ -373,7 +405,7 @@ fn respect_checkdeps<T>(nocheck: bool, deps: Vec<T>) -> Vec<T> {
     }
 }
 
-// FIXME Mon Feb  7 23:07:56 2022
+// FIXME Mon Feb 7 2022 pull_or_clone
 //
 // If `is_aur_package_fast` succeeds, perhaps we should assume that the clone is
 // up to date and avoid a pull here to speed things up. It may be better to
@@ -414,10 +446,8 @@ where
                 debug!("Trying extended provider search on {}.", pkg);
                 crate::faur::provides(pkg, fetch)
                     .ok()
-                    // FIXME Fri May 20 14:13:49 2022
-                    //
-                    // Somehow allow the user a choice of provider, if there are multiple.
-                    // In general this should be unlikely on the AUR for the average user.
+                    // FIXME Fri May 20 2022 Somehow allow the user a choice of provider, if there are multiple.
+                    // In general this should be unlikely on the AUR for the average user, especially for dependencies.
                     .and_then(|mut v| v.pop())
             })
             // Worst scenario: There wasn't a provider either. Then the
@@ -463,6 +493,8 @@ pub fn build_order<E>(to_build: &[Buildable]) -> Result<Vec<Vec<&str>>, Error<E>
             Some(b) => Error::CyclicDep(b.to_string()),
         })?
         .into_iter()
+        // Least-depended-upon to most-dependend-upon ordering. We reverse the
+        // order again at the very end.
         .map(|ix| graph.node_weight(ix))
         .collect::<Option<Vec<_>>>()
         .ok_or(Error::MalformedGraph)?
@@ -472,11 +504,19 @@ pub fn build_order<E>(to_build: &[Buildable]) -> Result<Vec<Vec<&str>>, Error<E>
             (Vec::new(), Vec::new(), HashSet::new()),
             |(mut layers, mut group, mut deps), buildable| {
                 if deps.contains(&buildable.name) {
+                    // Then, this buildable can't be built in the same layer as
+                    // the previously considered packages. We thus construct a
+                    // new layer.
                     layers.push(group);
                     deps.clear();
                     deps.extend(&buildable.deps);
                     (layers, vec![buildable.name.as_str()], deps)
                 } else {
+                    // While all of the Buildable's official (non-AUR) deps are
+                    // also included in its `deps` field, only its own name is
+                    // ever added to the build order "group", and thus we never
+                    // try to mistakenly build an official package as an AUR
+                    // one.
                     group.push(buildable.name.as_str());
                     deps.extend(&buildable.deps);
                     (layers, group, deps)
@@ -488,6 +528,7 @@ pub fn build_order<E>(to_build: &[Buildable]) -> Result<Vec<Vec<&str>>, Error<E>
             if group.is_empty().not() {
                 layers.push(group);
             }
+            // The most-dependend-upon packages will now come first.
             layers.reverse();
             Ok(layers)
         })

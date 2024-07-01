@@ -12,14 +12,14 @@ use std::{cmp::Ordering, process::Command};
 
 /// A validated path to a package tarball.
 #[derive(Debug, PartialEq, Eq)]
-pub struct PkgPath<'a> {
+pub struct PkgPath {
     path: PathBuf,
-    pkg: Package<'a>,
+    pkg: Package<'static>,
 }
 
-impl<'a> PkgPath<'a> {
+impl PkgPath {
     /// Validate that `PathBuf` has an expected extension.
-    pub fn new(path: PathBuf) -> Option<PkgPath<'static>> {
+    pub fn new(path: PathBuf) -> Option<PkgPath> {
         match Package::from_path(&path) {
             Some(pkg) if is_package(&path) => Some(PkgPath { path, pkg }),
             _ => None,
@@ -47,39 +47,39 @@ impl<'a> PkgPath<'a> {
     }
 
     /// Pull a simple package definition from this tarball path.
-    pub fn as_package(&self) -> &Package<'a> {
+    pub fn as_package(&self) -> &Package<'static> {
         &self.pkg
-    }
-
-    /// Delete this `PkgPath` and its `.sig` file, if there is one.
-    pub fn remove(self) -> Result<(), std::io::Error> {
-        std::fs::remove_file(&self.path)?;
-
-        let sig = self.sig_file();
-        if sig.exists() {
-            std::fs::remove_file(sig)?;
-        }
-
-        Ok(())
     }
 
     // TODO I'd like it if this could be avoided.
     /// Remove this via a shell call to `rm`.
-    pub fn sudo_remove(self) -> Result<(), PathBuf> {
-        match Command::new("sudo").arg("rm").arg(&self.path).status() {
+    pub fn sudo_remove(self, elevation: &str) -> Result<(), PathBuf> {
+        match Command::new(elevation).arg("rm").arg(&self.path).status() {
             Ok(s) if s.success() => Ok(()),
             Ok(_) | Err(_) => Err(self.path),
         }
     }
+
+    /// Delete this `PkgPath` and its `.sig` file, if there is one.
+    pub fn sudo_remove_with_sig(self, elevation: &str) -> Result<(), std::io::Error> {
+        Command::new(elevation).arg("rm").arg(&self.path).status()?;
+
+        let sig = self.sig_file();
+        if sig.exists() {
+            Command::new(elevation).arg("rm").arg(sig).status()?;
+        }
+
+        Ok(())
+    }
 }
 
-impl<'a> PartialOrd for PkgPath<'a> {
+impl PartialOrd for PkgPath {
     fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
         Some(self.cmp(other))
     }
 }
 
-impl<'a> Ord for PkgPath<'a> {
+impl Ord for PkgPath {
     fn cmp(&self, other: &Self) -> Ordering {
         self.pkg.cmp(&other.pkg)
     }
@@ -126,17 +126,27 @@ where
         })
 }
 
-/// Yield the [`CacheInfo`], if possible, of the given packages.
-pub fn info(caches: &[&Path], package: &str) -> Result<Option<CacheInfo>, std::io::Error> {
-    let mut matches: Vec<(PkgPath, Metadata)> = search(caches, package)
+/// Paths to the tarballs corresponding to a given package name.
+///
+/// Results are sorted by version.
+pub fn matching(caches: &[&Path], pkg: &str) -> Vec<(PkgPath, Metadata)> {
+    let mut matches = search(caches, pkg)
         .filter_map(|path| {
             path.metadata()
                 .ok()
                 .and_then(|meta| PkgPath::new(path).map(|pp| (pp, meta)))
         })
-        .filter(|(pp, _)| pp.pkg.name == package)
-        .collect();
-    matches.sort_by(|(p0, _), (p1, _)| p1.cmp(p0));
+        .filter(|(pp, _)| pp.pkg.name == pkg)
+        .collect::<Vec<_>>();
+    matches.sort_by(|(p0, _), (p1, _)| p0.cmp(p1));
+
+    matches
+}
+
+/// Yield the [`CacheInfo`], if possible, of the given packages.
+pub fn info(caches: &[&Path], package: &str) -> Result<Option<CacheInfo>, std::io::Error> {
+    let mut matches = matching(caches, package);
+    matches.reverse();
 
     let available: Vec<String> = matches
         .iter()
@@ -151,7 +161,7 @@ pub fn info(caches: &[&Path], package: &str) -> Result<Option<CacheInfo>, std::i
 
             let info = CacheInfo {
                 name: pp.pkg.name.into_owned(),
-                version: pp.pkg.version.into_owned(),
+                version: pp.pkg.version.to_string(),
                 created,
                 signature,
                 size: meta.len(),
@@ -180,7 +190,7 @@ where
 }
 
 /// Valid [`PkgPath`]s in the given caches.
-pub fn package_paths<P>(caches: &[P]) -> impl Iterator<Item = PkgPath<'static>> + '_
+pub fn package_paths<P>(caches: &[P]) -> impl Iterator<Item = PkgPath> + '_
 where
     P: AsRef<Path>,
 {

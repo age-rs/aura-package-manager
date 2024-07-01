@@ -1,9 +1,17 @@
 name: Haskell
 on:
   pull_request:
+    paths:
+      - "haskell/stack.yaml"
+      - "haskell/**/*.cabal"
+      - "haskell/**/*.hs"
   push:
-    branches:
-      - master
+    branches: [master]
+    paths:
+      - "haskell/stack.yaml"
+      - "haskell/**/*.cabal"
+      - "haskell/**/*.hs"
+      - ".github/workflows/haskell.yaml"
 
 jobs:
   build:
@@ -11,9 +19,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Setup GHC
-        uses: haskell/actions/setup@v2
+        uses: haskell-actions/setup@v2
         with:
-          ghc-version: "9.2.3"
+          ghc-version: "9.4.8"
           enable-stack: true
           stack-version: "latest"
 

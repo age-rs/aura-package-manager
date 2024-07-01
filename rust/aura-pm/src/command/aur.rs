@@ -6,8 +6,8 @@ use crate::env::Env;
 use crate::error::Nested;
 use crate::localization::Localised;
 use crate::utils::{Finished, PathStr, ResultVoid, NOTHING};
-use crate::{aura, green, proceed};
-use aura_core::Apply;
+use crate::{aura, green, proceed, yellow};
+use aura_core::{Apply, Package};
 use colored::{ColoredString, Colorize};
 use from_variants::FromVariants;
 use i18n_embed::{fluent::FluentLanguageLoader, LanguageLoader};
@@ -27,6 +27,7 @@ use time::OffsetDateTime;
 
 #[derive(FromVariants)]
 pub(crate) enum Error {
+    Backup(crate::command::snapshot::Error),
     Fetch(crate::fetch::Error),
     Dirs(crate::dirs::Error),
     Git(aura_core::git::Error),
@@ -43,6 +44,7 @@ pub(crate) enum Error {
     FileOpen(PathBuf, std::io::Error),
     #[from_variants(skip)]
     FileWrite(PathBuf, std::io::Error),
+    #[from_variants(skip)]
     DateConv(time::error::ComponentRange),
     NoPackages,
     Cancelled,
@@ -68,6 +70,7 @@ impl Nested for Error {
             Error::Cancelled => {}
             Error::Stdout => {}
             Error::DateConv(e) => error!("{e}"),
+            Error::Backup(e) => e.nested(),
         }
     }
 }
@@ -91,8 +94,15 @@ impl Localised for Error {
             Error::FileOpen(p, _) => fl!(fll, "err-file-open", file = p.utf8()),
             Error::FileWrite(p, _) => fl!(fll, "err-file-write", file = p.utf8()),
             Error::DateConv(_) => fl!(fll, "err-time-conv"),
+            Error::Backup(e) => e.localise(fll),
         }
     }
+}
+
+/// Whether this build process is a one-off build, or part of a complete upgrade.
+pub(crate) enum Mode {
+    Install,
+    Upgrade,
 }
 
 /// View AUR package information.
@@ -182,6 +192,27 @@ pub(crate) fn info(fll: &FluentLanguageLoader, packages: &[String]) -> Result<()
     Ok(())
 }
 
+pub(crate) fn provides<S>(
+    alpm: &Alpm,
+    alpha: bool,
+    rev: bool,
+    limit: Option<usize>,
+    quiet: bool,
+    providing: S,
+) -> Result<(), Error>
+where
+    S: AsRef<str>,
+{
+    let mut matches: Vec<aura_core::faur::Package> =
+        aura_core::faur::provides(providing, &crate::fetch::fetch_json)?;
+
+    matches.sort_by(|a, b| a.name.cmp(&b.name));
+
+    render_search(alpm, alpha, rev, limit, quiet, matches);
+
+    Ok(())
+}
+
 /// Search the AUR via a search string.
 ///
 /// Thanks to `clap`, the `terms` slice is guaranteed to be non-empty.
@@ -195,9 +226,6 @@ pub(crate) fn search(
 ) -> Result<(), Error> {
     debug!("Searching for: {:?}", terms);
 
-    let db = alpm.alpm.localdb();
-    let rep = "aur/".magenta();
-
     // Sanitize the input.
     terms.sort_unstable_by_key(|t| t.len());
     for t in terms.iter_mut() {
@@ -206,10 +234,27 @@ pub(crate) fn search(
 
     debug!("Sanitized terms: {:?}", terms);
 
-    let mut matches: Vec<aura_core::faur::Package> =
+    let matches: Vec<aura_core::faur::Package> =
         aura_core::faur::search(terms.iter().map(|s| s.as_str()), &crate::fetch::fetch_json)?;
 
     debug!("Search matches: {}", matches.len());
+
+    render_search(alpm, alpha, rev, limit, quiet, matches);
+
+    Ok(())
+}
+
+/// Render some search results. Orders by vote count by default.
+fn render_search(
+    alpm: &Alpm,
+    alpha: bool,
+    rev: bool,
+    limit: Option<usize>,
+    quiet: bool,
+    mut matches: Vec<aura_core::faur::Package>,
+) {
+    let db = alpm.alpm.localdb();
+    let rep = "aur/".magenta();
 
     // Sort and filter the results as requested.
     if alpha {
@@ -243,8 +288,6 @@ pub(crate) fn search(
             println!("    {}", p.description.unwrap_or_default());
         }
     }
-
-    Ok(())
 }
 
 /// View a package's PKGBUILD.
@@ -280,7 +323,9 @@ fn package_date(epoch: u64) -> Result<ColoredString, Error> {
     // There is a panic risk here with the u64->i64 conversion. In practice it
     // should never come up, as the timestamps passed in should never be
     // anywhere near the [`u64::MAX`] value.
-    let date = OffsetDateTime::from_unix_timestamp(epoch as i64)?.date();
+    let date = OffsetDateTime::from_unix_timestamp(epoch as i64)
+        .map_err(Error::DateConv)?
+        .date();
     Ok(format!("{}", date).normal())
 }
 
@@ -342,12 +387,24 @@ pub(crate) fn refresh(
 pub(crate) fn install<'a, I>(
     fll: &FluentLanguageLoader,
     env: &Env,
+    mode: Mode,
     raw_pkgs: I,
 ) -> Result<(), Error>
 where
     I: IntoIterator<Item = &'a str>,
 {
-    let pkgs: Vec<_> = raw_pkgs.into_iter().collect();
+    let pkgs: Vec<_> = raw_pkgs
+        .into_iter()
+        .filter(|p| {
+            // Prompt if the user specified packages that are marked "ignored".
+            if env.aur.ignores.contains(*p) {
+                let pkg = p.bold().cyan().to_string();
+                proceed!(fll, "A-install-ignored", file = pkg).is_some()
+            } else {
+                true
+            }
+        })
+        .collect();
 
     // Exit early if the user passed no packages.
     if pkgs.is_empty() {
@@ -358,22 +415,31 @@ where
     if env.aur.delmakedeps {
         let alpm = env.alpm()?;
         let before: HashSet<_> = aura_core::orphans(&alpm).map(|p| p.name()).collect();
-        install_work(fll, env, pkgs)?;
+        install_work(fll, env, mode, pkgs)?;
         // Another handle must be opened, or else the change in orphan packages won't be detected.
         let alpm = env.alpm()?;
         let after: HashSet<_> = aura_core::orphans(&alpm).map(|p| p.name()).collect();
-        let diff: Vec<_> = after.difference(&before).collect();
+        let mut diff: Vec<_> = after.difference(&before).collect();
+        // `base-devel` is added automatically to the build if the user didn't
+        // have it installed. It would be counter-intuitive to have it removed
+        // again, so we avoid that here.
+        diff.retain(|p| **p != "base-devel");
         if diff.is_empty().not() {
-            crate::pacman::sudo_pacman("-Rsu", NOTHING, diff)?;
+            crate::pacman::sudo_pacman(env, "-Rsu", NOTHING, diff)?;
         }
     } else {
-        install_work(fll, env, pkgs)?;
+        install_work(fll, env, mode, pkgs)?;
     }
 
     Ok(())
 }
 
-fn install_work<'a, I>(fll: &FluentLanguageLoader, env: &Env, pkgs: I) -> Result<(), Error>
+fn install_work<'a, I>(
+    fll: &FluentLanguageLoader,
+    env: &Env,
+    mode: Mode,
+    pkgs: I,
+) -> Result<(), Error>
 where
     I: IntoIterator<Item = &'a str>,
 {
@@ -415,6 +481,10 @@ where
         proceed!(fll, "proceed").ok_or(Error::Cancelled)?;
     }
 
+    if matches!(mode, Mode::Upgrade) && env.backups.automatic {
+        crate::command::snapshot::save(fll, &env.alpm()?, env.backups.snapshots.as_path())?;
+    }
+
     // --- Determine the best build order --- //
     let order: Vec<Vec<&str>> = aura_core::aur::dependencies::build_order(&to_build)?;
     debug!("Build order: {:?}", order);
@@ -422,6 +492,7 @@ where
     // --- Install repo dependencies --- //
     if to_install.is_empty().not() {
         crate::pacman::pacman_install_from_repos(
+            env,
             ["--asdeps", "--noconfirm"],
             to_install.iter().map(|o| o.as_ref()),
         )?;
@@ -429,11 +500,22 @@ where
 
     // --- Build and install each layer of AUR packages --- //
     let is_single = to_build.len() == 1;
+    let caches = env.caches();
+    let alpm = env.alpm()?;
     for raw_layer in order.into_iter().apply(Finished::new) {
         let done = raw_layer.is_last();
         let layer = raw_layer.inner();
         let clone_paths = layer.into_iter().map(|pkg| env.aur.clones.join(pkg));
-        let builts = build::build(fll, &env.aur, &env.general.editor, is_single, clone_paths)?;
+
+        let builts = build::build(
+            fll,
+            &caches,
+            &env.aur,
+            &alpm,
+            &env.general.editor,
+            is_single,
+            clone_paths,
+        )?;
 
         if builts.is_empty().not() {
             // FIXME Tue Jun 28 15:04:10 2022
@@ -443,7 +525,7 @@ where
             // needs to be confirmed, though.
             let flags = (!done).then(|| ["--asdeps"].as_slice()).unwrap_or_default();
             let tarballs = builts.iter().flat_map(|b| &b.tarballs);
-            crate::pacman::pacman_install_from_tarball(flags, tarballs)?;
+            crate::pacman::pacman_install_from_tarball(env, flags, tarballs)?;
 
             builts
                 .into_iter()
@@ -473,31 +555,51 @@ pub(crate) fn upgrade<'a>(
     fll: &FluentLanguageLoader,
     alpm: &'a Alpm,
     env: Env,
+    dryrun: bool,
 ) -> Result<(), Error> {
     info!("Upgrading all AUR packages.");
     debug!("Will ignore: {:?}", env.aur.ignores);
 
     // --- Query database for all non-repo packages --- //
     let mut foreigns: Vec<aura_core::Package<'a>> = aura_core::foreign_packages(alpm)
-        .map(|p| p.into())
+        .filter_map(aura_core::Package::from_alpm)
         .collect();
     debug!("Foreign packages: {}", foreigns.len());
     foreigns.retain(|p| env.aur.ignores.contains(p.name.as_ref()).not());
     debug!("After excluding ignores: {}", foreigns.len());
 
     // --- Ensure they all have local clones --- //
-    aura!(fll, "A-u-fetch-info");
+    if dryrun.not() {
+        aura!(fll, "A-u-fetch-info");
+    }
     let clones: HashSet<PathBuf> = foreigns
         .par_iter()
         .map(|p| p.name.as_ref())
-        .map(|p| {
-            aura_core::aur::clone_path_of_pkgbase(&env.aur.clones, p, &crate::fetch::fetch_json)
+        .filter_map(|p| {
+            let rpath = aura_core::aur::clone_path_of_pkgbase(
+                &env.aur.clones,
+                p,
+                &crate::fetch::fetch_json,
+            );
+
+            match rpath {
+                Ok(path) => Some(Ok(path)),
+                Err(aura_core::aur::Error::PackageDoesNotExist(p)) => {
+                    if dryrun.not() {
+                        yellow!(fll, "faur-unknown", pkg = p);
+                    }
+                    None
+                }
+                Err(e) => Some(Err(e)),
+            }
         })
         .collect::<Result<HashSet<_>, aura_core::aur::Error>>()?;
     debug!("Unique clones: {}", clones.len());
 
     // --- Compare versions to determine what to upgrade --- //
-    aura!(fll, "A-u-comparing");
+    if dryrun.not() {
+        aura!(fll, "A-u-comparing");
+    }
     info!("Reading .SRCINFO files...");
     let srcinfos = clones
         .into_par_iter()
@@ -516,7 +618,12 @@ pub(crate) fn upgrade<'a>(
     let mut to_upgrade: Vec<(aura_core::Package<'_>, aura_core::Package<'_>)> = from_api
         .into_iter()
         .filter_map(|new| db.pkg(new.name.as_str()).ok().map(|old| (old, new)))
-        .map(|(old, new)| (aura_core::Package::from(old), aura_core::Package::from(new)))
+        .filter_map(
+            |(old, new)| match (Package::from_alpm(old), Package::from_faur(new)) {
+                (Some(o), Some(n)) => Some((o, n)),
+                _ => None,
+            },
+        )
         .filter(|(old, new)| old < new)
         .collect();
     debug!("Packages to upgrade: {}", to_upgrade.len());
@@ -539,9 +646,13 @@ pub(crate) fn upgrade<'a>(
 
     // --- Report --- //
     if to_upgrade.is_empty() && (env.aur.git.not() || (env.aur.git && vcs.is_empty())) {
-        aura!(fll, "A-u-no-upgrades");
+        if dryrun.not() {
+            aura!(fll, "A-u-no-upgrades");
+        }
     } else {
-        aura!(fll, "A-u-to-upgrade");
+        if dryrun.not() {
+            aura!(fll, "A-u-to-upgrade");
+        }
         to_upgrade.sort_by(|(a, _), (b, _)| a.name.cmp(&b.name));
         let longest_name = to_upgrade
             .iter()
@@ -550,7 +661,7 @@ pub(crate) fn upgrade<'a>(
             .unwrap_or(0);
         let longest_version = to_upgrade
             .iter()
-            .map(|(old, _)| old.version.chars().count())
+            .map(|(old, _)| old.version.to_string().chars().count())
             .max()
             .unwrap_or(0);
 
@@ -558,11 +669,17 @@ pub(crate) fn upgrade<'a>(
             println!(
                 " {:n$} :: {:v$} -> {}",
                 old.name.cyan(),
-                old.version.truecolor(128, 128, 128),
-                new.version.bold(),
+                old.version.to_string().truecolor(128, 128, 128),
+                new.version.to_string().bold(),
                 n = longest_name,
                 v = longest_version,
             );
+        }
+
+        // We've printed the packages that have available upgrades, so now bail
+        // early before anything else can happen.
+        if dryrun {
+            return Ok(());
         }
 
         if env.aur.git && vcs.is_empty().not() {
@@ -576,7 +693,8 @@ pub(crate) fn upgrade<'a>(
             .iter()
             .map(|(old, _)| old.name.as_ref())
             .chain(vcs.iter().map(|p| p.name.as_ref()));
-        install(fll, &env, names)?;
+
+        install(fll, &env, Mode::Upgrade, names)?;
     }
 
     Ok(())

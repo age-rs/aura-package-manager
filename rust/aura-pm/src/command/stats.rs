@@ -1,26 +1,34 @@
 //! Statistics about the user's machine or about Aura itself.
 
+use crate::env::Env;
 use crate::error::Nested;
 use crate::localization::{self, Localised};
 use colored::*;
 use from_variants::FromVariants;
 use i18n_embed::fluent::FluentLanguageLoader;
+use i18n_embed::LanguageLoader;
 use i18n_embed_fl::fl;
 use log::error;
 use r2d2_alpm::Alpm;
 use std::collections::{HashMap, HashSet};
+use std::io::BufWriter;
 use ubyte::ToByteUnit;
 use unic_langid::{langid, LanguageIdentifier};
 
 #[derive(FromVariants)]
 pub(crate) enum Error {
+    #[from_variants(skip)]
     LangLoad(i18n_embed::I18nEmbedError),
+    Env(crate::env::Error),
+    Stdout,
 }
 
 impl Nested for Error {
     fn nested(&self) {
         match self {
             Error::LangLoad(e) => error!("{e}"),
+            Error::Env(e) => e.nested(),
+            Error::Stdout => {}
         }
     }
 }
@@ -29,13 +37,16 @@ impl Localised for Error {
     fn localise(&self, fll: &FluentLanguageLoader) -> String {
         match self {
             Error::LangLoad(_) => fl!(fll, "stats-local"),
+            Error::Env(e) => e.localise(fll),
+            Error::Stdout => fl!(fll, "err-write"),
         }
     }
 }
 
 /// Raw contents of loaded localizations.
 pub(crate) fn localization() -> Result<(), Error> {
-    let stats: HashMap<LanguageIdentifier, (String, usize)> = localization::load_all()?
+    let stats: HashMap<LanguageIdentifier, (String, usize)> = localization::load_all()
+        .map_err(Error::LangLoad)?
         .into_iter()
         .map(|(lang, fll)| {
             let count = fll.with_message_iter(&lang, |iter| iter.count());
@@ -83,9 +94,62 @@ pub(crate) fn localization() -> Result<(), Error> {
 fn visual_len(lang: &LanguageIdentifier, msg: &str) -> usize {
     let raw = msg.chars().count();
     match lang.language.as_str() {
-        "ja" => raw * 2,
+        "ja" | "ko" | "zh" => raw * 2,
         _ => raw,
     }
+}
+
+/// Basic stats about the current machine.
+pub(crate) fn stats(env: &Env, fll: &FluentLanguageLoader) -> Result<(), Error> {
+    let alpm = env.alpm()?;
+    let mut w = BufWriter::new(std::io::stdout());
+
+    let pkgs = installed_packages(&alpm);
+    let aura_cache_bytes = aura_core::recursive_dir_size(&env.aur.cache);
+    let pacman_cache_bytes: u64 = env
+        .pacman
+        .cache_dir
+        .iter()
+        .map(aura_core::recursive_dir_size)
+        .sum();
+    let aura_build_bytes = aura_core::recursive_dir_size(&env.aur.build);
+    let tmp_bytes = aura_core::recursive_dir_size("/tmp");
+
+    let pairs = vec![
+        (
+            fl!(fll, "stats-host"),
+            whoami::fallible::hostname()
+                .unwrap_or_else(|_| "Unknown".to_string())
+                .normal(),
+        ),
+        (fl!(fll, "stats-user"), whoami::username().normal()),
+        (fl!(fll, "stats-distro"), whoami::distro().normal()),
+        (fl!(fll, "stats-editor"), env.general.editor.normal()),
+        (fl!(fll, "stats-pkgs"), pkgs.to_string().normal()),
+        (
+            fl!(fll, "stats-pacman-cache"),
+            format!("{}", pacman_cache_bytes.bytes()).normal(),
+        ),
+        (
+            fl!(fll, "stats-aura-cache"),
+            format!("{}", aura_cache_bytes.bytes()).normal(),
+        ),
+        (
+            fl!(fll, "stats-aura-build"),
+            format!("{}", aura_build_bytes.bytes()).normal(),
+        ),
+        (
+            fl!(fll, "stats-tmp"),
+            format!("{}", tmp_bytes.bytes()).normal(),
+        ),
+    ];
+
+    crate::utils::info(&mut w, fll.current_language(), &pairs).map_err(|_| Error::Stdout)
+}
+
+/// The number of packages installed on the system.
+fn installed_packages(alpm: &Alpm) -> usize {
+    alpm.as_ref().localdb().pkgs().iter().count()
 }
 
 /// Display the Top 10 packages with the biggest installation footprint.

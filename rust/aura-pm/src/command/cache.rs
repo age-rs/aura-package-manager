@@ -34,6 +34,7 @@ const CMPR_SWITCH: i64 = 1_577_404_800;
 
 #[derive(FromVariants)]
 pub(crate) enum Error {
+    #[from_variants(skip)]
     Readline(rustyline::error::ReadlineError),
     Sudo(crate::utils::SudoError),
     Pacman(crate::pacman::Error),
@@ -97,8 +98,8 @@ impl Localised for Error {
 
 /// Downgrade the given packages.
 pub(crate) fn downgrade(
+    env: &Env,
     fll: &FluentLanguageLoader,
-    caches: &[&Path],
     packages: Vec<String>,
 ) -> Result<(), Error> {
     // Exit early if the user passed no packages.
@@ -106,9 +107,11 @@ pub(crate) fn downgrade(
         return Err(Error::NoPackages);
     }
 
+    let caches = env.caches();
+
     // --- All tarball paths for packages the user asked for --- //
     let mut tarballs: HashMap<&str, Vec<PkgPath>> = HashMap::new();
-    for pp in aura_core::cache::package_paths(caches) {
+    for pp in aura_core::cache::package_paths(&caches) {
         if let Some(p) = packages.iter().find(|p| p == &&pp.as_package().name) {
             let paths = tarballs.entry(p).or_default();
             paths.push(pp);
@@ -126,16 +129,16 @@ pub(crate) fn downgrade(
         return Err(Error::NothingToDo);
     }
 
-    crate::pacman::sudo_pacman("-U", NOTHING, to_downgrade)?;
+    crate::pacman::sudo_pacman(env, "-U", NOTHING, to_downgrade)?;
     green!(fll, "common-done");
     Ok(())
 }
 
-fn downgrade_one<'a>(
+fn downgrade_one(
     fll: &FluentLanguageLoader,
     package: &str,
-    mut tarballs: Vec<PkgPath<'a>>,
-) -> Result<PkgPath<'a>, Error> {
+    mut tarballs: Vec<PkgPath>,
+) -> Result<PkgPath, Error> {
     tarballs.sort_by(|a, b| b.as_package().cmp(a.as_package()));
     let digits = 1 + (tarballs.len() / 10);
 
@@ -146,27 +149,27 @@ fn downgrade_one<'a>(
         println!(" {:w$}) {}", i, pp.as_package().version, w = digits);
     }
 
-    let index = crate::utils::select(">>> ", tarballs.len() - 1)?;
+    let index = crate::utils::select(">>> ", tarballs.len() - 1).map_err(Error::Readline)?;
 
     Ok(tarballs.remove(index))
 }
 
 /// Delete invalid tarballs from the cache.
 pub(crate) fn invalid(
+    env: &Env,
     fll: &FluentLanguageLoader,
     alpm: &Alpm,
     caches: &[&Path],
 ) -> Result<(), Error> {
-    crate::utils::sudo()?;
     aura!(fll, "C-t-invalids");
 
-    // FIXME Thu Jan 27 15:24:44 2022
-    //
-    // Use `Validated` here.
+    let elevation = env.sudo();
+
+    // FIXME Thu Jan 27 2022 Use `Validated` here.
     aura_core::cache::package_paths(caches)
         .filter(|pp| !aura_core::is_valid_package(alpm, pp.as_path()))
         .for_each(|pp| {
-            let _ = pp.remove(); // TODO Better handling.
+            let _ = pp.sudo_remove_with_sig(elevation); // TODO Better handling.
         });
 
     green!(fll, "common-done");
@@ -251,14 +254,11 @@ pub(crate) fn search(caches: &[&Path], term: &str) -> Result<(), Error> {
 }
 
 /// Delete all but `keep`-many old tarballs for each package in the cache.
-pub(crate) fn clean(
-    fll: &FluentLanguageLoader,
-    caches: &[&Path],
-    keep: usize,
-) -> Result<(), Error> {
-    crate::utils::sudo()?;
+pub(crate) fn clean(env: &Env, fll: &FluentLanguageLoader, keep: usize) -> Result<(), Error> {
+    let caches = env.caches();
+    debug!("Caches: {:?}", caches);
 
-    let size_before = aura_core::cache::size(caches);
+    let size_before = aura_core::cache::size(&caches);
     let human = format!("{}", size_before.bytes.bytes());
     aura!(fll, "C-size", size = human);
     yellow!(fll, "C-c-keep", pkgs = keep);
@@ -266,17 +266,19 @@ pub(crate) fn clean(
     // Proceed if the user accepts.
     proceed!(fll, "proceed").ok_or(Error::Cancelled)?;
 
+    let elevation = env.sudo();
+
     // Get all the tarball paths, sort and group them by name, and then remove them.
-    aura_core::cache::package_paths(caches)
+    aura_core::cache::package_paths(&caches)
         .sorted_by(|p0, p1| p1.cmp(p0)) // Forces a `collect` underneath.
-        .group_by(|pp| pp.as_package().name.clone()) // TODO Naughty clone.
+        .chunk_by(|pp| pp.as_package().name.clone()) // TODO Naughty clone.
         .into_iter()
         .flat_map(|(_, group)| group.skip(keep)) // Thanks to the reverse-sort above, `group` is already backwards.
         .for_each(|pp| {
-            let _ = pp.remove(); // TODO Handle this error better?
+            let _ = pp.sudo_remove_with_sig(elevation); // TODO Handle this error better?
         });
 
-    let size_after = aura_core::cache::size(caches);
+    let size_after = aura_core::cache::size(&caches);
     let freed = format!("{}", (size_before.bytes - size_after.bytes).bytes());
     green!(fll, "C-c-freed", bytes = freed);
     Ok(())
@@ -310,14 +312,16 @@ pub(crate) fn clean_not_saved(fll: &FluentLanguageLoader, env: &Env) -> Result<(
         snaps
     };
 
+    let elevation = env.sudo();
+
     for tarball in tarballs {
         let p = tarball.as_package();
 
         // If no snapshot contains this tarball's particular version, remove it
         // from the filesystem.
         match snaps.get(p.name.as_ref()) {
-            Some(vs) if vs.contains(p.version.as_ref()) => {}
-            Some(_) | None => tarball.sudo_remove().map_err(Error::Delete)?,
+            Some(vs) if vs.contains(&p.version.to_string()) => {}
+            Some(_) | None => tarball.sudo_remove(elevation).map_err(Error::Delete)?,
         }
     }
 
@@ -330,16 +334,18 @@ pub(crate) fn clean_not_saved(fll: &FluentLanguageLoader, env: &Env) -> Result<(
 }
 
 /// Download tarballs of installed packages that are missing from the cache.
-pub(crate) fn refresh(
-    fll: &FluentLanguageLoader,
-    alpm: &Alpm,
-    caches: &[&Path],
-) -> Result<(), Error> {
-    crate::utils::sudo()?;
+pub(crate) fn refresh(env: &Env, fll: &FluentLanguageLoader, alpm: &Alpm) -> Result<(), Error> {
+    crate::utils::sudo(env)?;
+
+    // FIXME 2024-06-04 This probably doesn't conserve local cache paths!
+    //
+    // 2024-06-07 But it _would_ conserve the main pacman cache, which is
+    // probably what we actually care about with -Cy.
+    let caches = env.caches();
 
     // All installed packages that are missing a tarball in the cache.
     let ps: Vec<&alpm::Package> = {
-        let mut ps: Vec<_> = aura_core::cache::officials_missing_tarballs(alpm, caches).collect();
+        let mut ps: Vec<_> = aura_core::cache::officials_missing_tarballs(alpm, &caches).collect();
         ps.sort_by(|a, b| a.name().cmp(b.name()));
         ps
     };
@@ -384,7 +390,7 @@ pub(crate) fn refresh(
         for (i, cache) in caches.iter().enumerate() {
             println!(" {}) {}", i, cache.display());
         }
-        let ix = crate::utils::select(">>> ", caches.len() - 1)?;
+        let ix = crate::utils::select(">>> ", caches.len() - 1).map_err(Error::Readline)?;
         let target_cache = caches[ix];
 
         // Mirrors.
@@ -424,7 +430,7 @@ pub(crate) fn refresh(
                 let mut res = ms.iter().filter_map(|m| {
                     let url = format!("{}/{}", m, tarball);
                     let target = target_cache.join(&tarball);
-                    download_with_progress(&url, &target, Some((pr.clone(), &bar))).ok()
+                    download_with_progress(&url, &target, Some((pr.clone(), &bar)))
                 });
 
                 // If the download failed from every mirror, cancel the progress bar.

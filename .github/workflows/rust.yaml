@@ -3,7 +3,14 @@ name: Rust
 on:
   push:
     branches: [master]
+    paths:
+      - "rust/**/Cargo.toml"
+      - "rust/**/*.rs"
+      - ".github/workflows/rust.yaml"
   pull_request:
+    paths:
+      - "rust/**/Cargo.toml"
+      - "rust/**/*.rs"
 
 env:
   CARGO_TERM_COLOR: always
@@ -13,7 +20,7 @@ jobs:
     name: Tests
     runs-on: ubuntu-latest
     container:
-      image: archlinux
+      image: ghcr.io/archlinux/archlinux:latest
     steps:
       - name: Install Rust
         run: pacman -Sy rust gcc glibc openssl pkgconf --noconfirm

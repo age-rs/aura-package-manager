@@ -5,11 +5,54 @@ use clap::{ArgAction, Parser, Subcommand};
 use simplelog::LevelFilter;
 use std::ops::Not;
 use std::path::PathBuf;
-use unic_langid::{langid, LanguageIdentifier};
+use unic_langid::LanguageIdentifier;
 
 /// Global options only applicable to Aura that must be removed from the
 /// top-level args list before sending it to Pacman.
-pub const AURA_GLOBALS: &[&str] = &["--english", "--japanese", "--german"];
+pub const AURA_GLOBALS: &[&str] = &[
+    "--english",
+    "--japanese",
+    "--日本語",
+    "--german",
+    "--deutsch",
+    "--polish",
+    "--polski",
+    "--croatian",
+    "--hrvatski",
+    "--swedish",
+    "--svenska",
+    "--spanish",
+    "--español",
+    "--portuguese",
+    "--português",
+    "--french",
+    "--français",
+    "--russian",
+    "--русский",
+    "--italian",
+    "--italiano",
+    "--serbian",
+    "--cрпски",
+    "--norwegian",
+    "--norsk",
+    "--indonesian",
+    "--simplified-chinese",
+    "--简体字",
+    "--esperanto",
+    "--dutch",
+    "--nederlands",
+    "--turkish",
+    "--ukrainian",
+    "--українська",
+    "--romanian",
+    "--română",
+    "--czech",
+    "--český",
+    "--korean",
+    "--한국어",
+    "--hindi",
+    "--हिंदी",
+];
 
 /// Commandline arguments to the Aura executable.
 #[derive(Parser, Debug)]
@@ -45,10 +88,184 @@ pub struct Args {
         display_order = 10
     )]
     pub german: bool,
+    /// Output in Polish (alias: polski).
+    #[clap(
+        group = "language",
+        long,
+        global = true,
+        alias = "polski",
+        display_order = 10
+    )]
+    pub polish: bool,
+    /// Output in Croatian (alias: hrvatski).
+    #[clap(
+        group = "language",
+        long,
+        global = true,
+        alias = "hrvatski",
+        display_order = 10
+    )]
+    pub croatian: bool,
+    /// Output in Swedish (alias: svenska).
+    #[clap(
+        group = "language",
+        long,
+        global = true,
+        alias = "svenska",
+        display_order = 10
+    )]
+    pub swedish: bool,
+    /// Output in Spanish (alias: español).
+    #[clap(
+        group = "language",
+        long,
+        global = true,
+        alias = "español",
+        display_order = 10
+    )]
+    pub spanish: bool,
+    /// Output in Portuguese (alias: português).
+    #[clap(
+        group = "language",
+        long,
+        global = true,
+        alias = "português",
+        display_order = 10
+    )]
+    pub portuguese: bool,
+    /// Output in French (alias: français).
+    #[clap(
+        group = "language",
+        long,
+        global = true,
+        alias = "français",
+        display_order = 10
+    )]
+    pub french: bool,
+    /// Output in Russian (alias: русский).
+    #[clap(
+        group = "language",
+        long,
+        global = true,
+        alias = "русский",
+        display_order = 10
+    )]
+    pub russian: bool,
+    /// Output in Italian (alias: italiano).
+    #[clap(
+        group = "language",
+        long,
+        global = true,
+        alias = "italiano",
+        display_order = 10
+    )]
+    pub italian: bool,
+    /// Output in Serbian (alias: cрпски).
+    #[clap(
+        group = "language",
+        long,
+        global = true,
+        alias = "cрпски",
+        display_order = 10
+    )]
+    pub serbian: bool,
+    /// Output in Norwegian (alias: norsk).
+    #[clap(
+        group = "language",
+        long,
+        global = true,
+        alias = "norsk",
+        display_order = 10
+    )]
+    pub norwegian: bool,
+    /// Output in Indonesian.
+    #[clap(group = "language", long, global = true, display_order = 10)]
+    pub indonesian: bool,
+    /// Output in Simplified Chinese (alias: 简体字).
+    #[clap(
+        group = "language",
+        long,
+        global = true,
+        alias = "简体字",
+        display_order = 10
+    )]
+    pub simplified_chinese: bool,
+    /// Output in Esperanto.
+    #[clap(group = "language", long, global = true, display_order = 10)]
+    pub esperanto: bool,
+    /// Output in Dutch (alias: nederlands).
+    #[clap(
+        group = "language",
+        long,
+        global = true,
+        alias = "nederlands",
+        display_order = 10
+    )]
+    pub dutch: bool,
+    /// Output in Turkish.
+    #[clap(group = "language", long, global = true, display_order = 10)]
+    pub turkish: bool,
+    /// Output in Arabic (alias: العربية).
+    #[clap(
+        group = "language",
+        long,
+        global = true,
+        alias = "العربية",
+        display_order = 10
+    )]
+    pub arabic: bool,
+    /// Output in Ukrainian (alias: українська).
+    #[clap(
+        group = "language",
+        long,
+        global = true,
+        alias = "українська",
+        display_order = 10
+    )]
+    pub ukrainian: bool,
+    /// Output in Romanian (alias: română).
+    #[clap(
+        group = "language",
+        long,
+        global = true,
+        alias = "română",
+        display_order = 10
+    )]
+    pub romanian: bool,
+    /// Output in Vietnamese.
+    #[clap(group = "language", long, global = true, display_order = 10)]
+    pub vietnamese: bool,
+    /// Output in Czech (alias: český).
+    #[clap(
+        group = "language",
+        long,
+        global = true,
+        alias = "český",
+        display_order = 10
+    )]
+    pub czech: bool,
+    /// Output in Korean (alias: 한국어).
+    #[clap(
+        group = "language",
+        long,
+        global = true,
+        alias = "한국어",
+        display_order = 10
+    )]
+    pub korean: bool,
+    /// Output in Hindi (alias: हिंदी).
+    #[clap(
+        group = "language",
+        long,
+        global = true,
+        alias = "हिंदी",
+        display_order = 10
+    )]
+    pub hindi: bool,
 
     // --- Other Aura Options --- //
     /// Minimum level of Aura log messages to display.
-    #[clap(long, value_name = "level", global = true)]
+    #[clap(long, value_name = "level", global = true, display_order = 9)]
     pub log_level: Option<LevelFilter>,
     /// The Pacman/Aura subcommand to run.
     #[clap(subcommand)]
@@ -60,9 +277,31 @@ impl Args {
     /// corresponding standardized language code.
     pub fn language(&self) -> Option<LanguageIdentifier> {
         match () {
-            _ if self.english => Some(langid!("en-US")),
-            _ if self.german => Some(langid!("de-DE")),
-            _ if self.japanese => Some(langid!("ja-JP")),
+            _ if self.english => Some(crate::ENGLISH),
+            _ if self.japanese => Some(crate::JAPANESE),
+            _ if self.polish => Some(crate::POLISH),
+            _ if self.croatian => Some(crate::CROATIAN),
+            _ if self.swedish => Some(crate::SWEDISH),
+            _ if self.german => Some(crate::GERMAN),
+            _ if self.spanish => Some(crate::SPANISH),
+            _ if self.portuguese => Some(crate::PORTUGUESE),
+            _ if self.french => Some(crate::FRENCH),
+            _ if self.russian => Some(crate::RUSSIAN),
+            _ if self.italian => Some(crate::ITALIAN),
+            _ if self.serbian => Some(crate::SERBIAN),
+            _ if self.norwegian => Some(crate::NORWEGIAN),
+            _ if self.indonesian => Some(crate::INDONESIAN),
+            _ if self.simplified_chinese => Some(crate::SIMPLIFIED_CHINESE),
+            _ if self.esperanto => Some(crate::ESPERANTO),
+            _ if self.dutch => Some(crate::DUTCH),
+            _ if self.turkish => Some(crate::TURKISH),
+            _ if self.arabic => Some(crate::ARABIC),
+            _ if self.ukrainian => Some(crate::UKRAINIAN),
+            _ if self.romanian => Some(crate::ROMANIAN),
+            _ if self.vietnamese => Some(crate::VIETNAMESE),
+            _ if self.czech => Some(crate::CZECH),
+            _ if self.korean => Some(crate::KOREAN),
+            _ if self.hindi => Some(crate::HINDI),
             _ => None,
         }
     }
@@ -119,6 +358,8 @@ pub enum SubCmd {
     Open(Open),
     /// View statistics about your machine or about Aura itself.
     Stats(Stats),
+    /// The people behind Aura.
+    Thanks,
 }
 
 /// Synchronize official packages.
@@ -165,9 +406,9 @@ pub struct Sync {
     /// Show less information for query and search.
     #[clap(long, short, display_order = 2)]
     quiet: bool,
-    /// Search remote repositories for matchings strings.
-    #[clap(group = "sync", long, short, value_name = "terms", num_args = 1.., display_order = 1)]
-    search: Vec<String>,
+    /// Search remote repositories for matching strings.
+    #[clap(group = "sync", long, short, display_order = 1)]
+    search: bool,
     /// Upgrade installed packages (-uu enables downgrades).
     #[clap(
         group = "sync",
@@ -275,11 +516,7 @@ pub struct Sync {
 impl Sync {
     /// Does this `-S` subflag need sudo?
     pub fn needs_sudo(&self) -> bool {
-        (self.info.is_empty().not()
-            || self.search.is_empty().not()
-            || self.list.is_some()
-            || self.print)
-            .not()
+        (self.info.is_empty().not() || self.search || self.list.is_some() || self.print).not()
     }
 }
 
@@ -515,8 +752,8 @@ pub struct Remove {
     #[clap(long, short, display_order = 1)]
     cascade: bool,
     /// Skip dependency version checks (-dd to skip all checks).
-    #[clap(long, short = 'd', display_order = 1)]
-    nodeps: bool,
+    #[clap(long, short = 'd', action = ArgAction::Count, display_order = 1)]
+    nodeps: u8,
     /// Remove configuration files.
     #[clap(long, short = 'n', display_order = 1)]
     nosave: bool,
@@ -524,8 +761,8 @@ pub struct Remove {
     #[clap(long, short, display_order = 1)]
     print: bool,
     /// Remove unnecessary dependencies (-ss includes explicitly installed dependencies).
-    #[clap(long, short = 's', display_order = 1)]
-    recursive: bool,
+    #[clap(long, short = 's', action = ArgAction::Count, display_order = 1)]
+    recursive: u8,
     /// Remove unneeded packages.
     #[clap(long, short, display_order = 1)]
     unneeded: bool,
@@ -802,7 +1039,7 @@ pub struct Orphans {
 pub struct Conf {
     /// Set an alternate Pacman configuration file.
     #[clap(long, value_name = "path")]
-    pub config: Option<String>,
+    pub config: Option<PathBuf>,
     /// View the Pacman conf.
     #[clap(group = "conf", long, short, display_order = 1)]
     pub pacman: bool,
@@ -887,20 +1124,29 @@ pub struct Aur {
     )]
     pub search: Vec<String>,
 
-    // TODO Avoid boolean blindness.
-    /// [-s] Sort results alphabetically.
+    /// Search the AUR for packages that "provide" some package identity.
+    #[clap(
+        group = "aur",
+        long,
+        short = 'v',
+        value_name = "package",
+        display_order = 1
+    )]
+    pub provides: Option<String>,
+
+    /// [-s/-v] Sort results alphabetically.
     #[clap(long, display_order = 2)]
     pub abc: bool,
 
-    /// [-s] Limit the results to N results.
+    /// [-s/-v] Limit the results to N results.
     #[clap(long, value_name = "N", display_order = 2)]
     pub limit: Option<usize>,
 
-    /// [-s] Reverse the search results.
+    /// [-s/-v] Reverse the search results.
     #[clap(long, short, display_order = 2)]
     pub reverse: bool,
 
-    /// [-s] Only print matching package names.
+    /// [-s/-v] Only print matching package names.
     #[clap(long, short, display_order = 2)]
     pub quiet: bool,
 
@@ -941,6 +1187,10 @@ pub struct Aur {
     )]
     pub ignore: Vec<String>,
 
+    /// [-u] Show available upgrades, but do not perform them.
+    #[clap(long, short = 'd', display_order = 3)]
+    pub dryrun: bool,
+
     /// Clone a package's AUR repository, but don't build anything.
     #[clap(
         group = "aur",
@@ -954,6 +1204,7 @@ pub struct Aur {
 
     /// Deprecated.
     #[clap(long, short = 'x', display_order = 1)]
+    #[deprecated(since = "4.0.0", note = "Makepkg output is now shown by default.")]
     pub unsuppress: bool,
 
     /// Pull the latest changes for every local copy of an AUR package.
@@ -998,7 +1249,6 @@ pub struct Cache {
     pub search: Option<String>,
 
     // TODO Make other options elsewhere that expect a path have `PathBuf` too.
-    // TODO Restore the `short` flag for this option after resolving the conflict with `--dbpath`!
     /// Back up the package cache to a given directory.
     #[clap(group = "cache", long, short, value_name = "target", display_order = 1)]
     pub backup: Option<PathBuf>,

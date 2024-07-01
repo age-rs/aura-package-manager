@@ -2,11 +2,13 @@ use crate::error::Nested;
 use crate::localization::Localised;
 use crate::utils::{PathStr, ResultVoid};
 use crate::{aura, proceed, red, yellow};
+use aura_core::cache::PkgPath;
 use colored::Colorize;
 use i18n_embed::fluent::FluentLanguageLoader;
 use i18n_embed_fl::fl;
 use log::{debug, error, warn};
 use nonempty_collections::NEVec;
+use r2d2_alpm::Alpm;
 use srcinfo::Srcinfo;
 use std::ops::Not;
 use std::path::{Path, PathBuf};
@@ -25,6 +27,7 @@ pub(crate) enum Error {
     ReadDir(PathBuf, std::io::Error),
     Pkglist(PathBuf, std::io::Error),
     Makepkg,
+    PkgctlBuild,
     Cancelled,
 }
 
@@ -47,6 +50,7 @@ impl Nested for Error {
             Error::Pkglist(_, e) => error!("{e}"),
             Error::Makepkg => {}
             Error::Cancelled => {}
+            Error::PkgctlBuild => {}
         }
     }
 }
@@ -63,6 +67,7 @@ impl Localised for Error {
             Error::Cancelled => fl!(fll, "common-cancelled"),
             Error::EditFail(p) => fl!(fll, "A-build-e-edit", file = p.utf8()),
             Error::Makepkg => fl!(fll, "A-build-e-makepkg"),
+            Error::PkgctlBuild => fl!(fll, "A-build-e-pkgctl"),
             Error::CreateDir(p, _) => fl!(fll, "dir-mkdir", dir = p.utf8()),
             Error::ReadDir(p, _) => fl!(fll, "err-read-dir", dir = p.utf8()),
             Error::Pkglist(p, _) => fl!(fll, "A-build-pkglist", dir = p.utf8()),
@@ -79,11 +84,20 @@ pub(crate) struct Built {
 // TODO Thu Jan 20 16:13:54 2022
 //
 // Consider parallel builds, but make it opt-in.
+//
+// 2024-06-12
+//
+// Really? Given that certain packages themselves build with multiple threads,
+// this sounds like a recipe for problems.
 /// Build the given packages and yield paths to their built tarballs.
 pub(crate) fn build<I>(
     fll: &FluentLanguageLoader,
+    caches: &[&Path],
     aur: &crate::env::Aur,
+    alpm: &Alpm,
     editor: &str,
+    // Was there only ever one package to be built? If so, we don't prompt the
+    // user with a "will you continue?" message if the build fails.
     is_single: bool,
     pkg_clones: I,
 ) -> Result<Vec<Built>, Error>
@@ -93,7 +107,7 @@ where
     aura!(fll, "A-build-prep");
 
     let to_install = pkg_clones
-        .map(|path| build_one(fll, aur, editor, path))
+        .map(|path| build_one(fll, caches, aur, alpm, editor, path))
         .map(|r| build_check(fll, is_single, r))
         .collect::<Result<Vec<Option<Built>>, Error>>()?
         .into_iter()
@@ -105,7 +119,9 @@ where
 
 fn build_one(
     fll: &FluentLanguageLoader,
+    caches: &[&Path],
     aur: &crate::env::Aur,
+    alpm: &Alpm,
     editor: &str,
     clone: PathBuf,
 ) -> Result<Built, Error> {
@@ -124,8 +140,11 @@ fn build_one(
     aura!(fll, "A-build-pkg", pkg = base.cyan().bold().to_string());
 
     // --- Prepare the Build Directory --- //
-    let build = aur.build.join(&base);
-    std::fs::create_dir_all(&build).map_err(|e| Error::CreateDir(build.clone(), e))?;
+    let build_dir = aur.build.join(&base);
+    // TODO 2024-06-13 Consider giving the option to wipe the build dir every time.
+    //
+    // Sometimes certain packages don't want to have `configure` ran more than once, etc.
+    std::fs::create_dir_all(&build_dir).map_err(|e| Error::CreateDir(build_dir.clone(), e))?;
 
     // --- Copy non-downloadable `source` files and PKGBUILD --- //
     let to_copy = info
@@ -136,24 +155,16 @@ fn build_one(
         .filter(|file| (file.contains("https://") || file.contains("http://")).not())
         .map(|s| s.as_str());
 
-    let install_file: Option<PathBuf> = {
-        let install = info
-            .pkg
-            .install
-            .as_deref()
-            .map(PathBuf::from)
-            .unwrap_or_else(|| Path::new(&base).with_extension("install"));
-        clone.join(&install).is_file().then_some(install)
-    };
+    let install_files = all_install_files(&clone);
 
     std::iter::once("PKGBUILD")
-        .chain(install_file.iter().filter_map(|pb| pb.to_str()))
+        .chain(install_files.iter().filter_map(|pb| pb.to_str()))
         .chain(to_copy)
         .map(|file| {
             debug!("Copying {}", file);
             let path = Path::new(&file);
             let source = clone.join(path);
-            let target = build.join(path);
+            let target = build_dir.join(path);
             std::fs::copy(source, target).void()
         })
         .collect::<Validated<(), std::io::Error>>()
@@ -165,11 +176,29 @@ fn build_one(
     }
 
     if aur.hotedit {
-        overwrite_build_files(fll, editor, &build, &base)?;
+        overwrite_build_files(fll, editor, &build_dir, &base)?;
     }
 
     let tarballs = {
-        let tarballs = makepkg(&build, aur.nocheck)?;
+        let tarballs = if aur.chroot.contains(&base) {
+            let dbs = alpm.as_ref().syncdbs();
+            let aur_deps: Vec<_> = info
+                .base
+                .makedepends
+                .into_iter()
+                .flat_map(|av| av.vec)
+                .chain(info.pkg.depends.into_iter().flat_map(|av| av.vec))
+                .filter(|s| dbs.find_satisfier(s.as_str()).is_none())
+                // `pop` fetches the last item in the Vec, which should be the
+                // most recent version of the package.
+                .filter_map(|p| aura_core::cache::matching(caches, &p).pop())
+                .map(|(pp, _)| pp)
+                .collect();
+
+            pkgctl_build(&build_dir, &aur_deps)
+        } else {
+            makepkg(&build_dir, aur.nocheck)
+        }?;
 
         for tb in tarballs.iter() {
             debug!("Built: {}", tb.display());
@@ -183,6 +212,24 @@ fn build_one(
     };
 
     Ok(Built { clone, tarballs })
+}
+
+/// The PKGBUILD author didn't specify any explicit in the `install` field, but
+/// there may be some "install files" lying around anyway. These have
+/// inconsistent naming schemes across packages, so we just grab anything that
+/// ends with `.install`.
+fn all_install_files(clone: &Path) -> Vec<PathBuf> {
+    clone
+        .read_dir()
+        .map(|dir| {
+            dir.filter_map(|de| de.ok())
+                .map(|de| de.path())
+                .filter(|p| p.extension().and_then(|s| s.to_str()) == Some("install"))
+                .filter_map(|p| p.file_name().map(|s| s.to_os_string()))
+                .map(PathBuf::from)
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 fn show_diffs(
@@ -260,11 +307,45 @@ fn edit(editor: &str, file: PathBuf) -> Result<(), Error> {
     Ok(())
 }
 
+fn pkgctl_build(within: &Path, deps: &[PkgPath]) -> Result<Vec<PathBuf>, Error> {
+    debug!("Running `pkgctl build` within {}", within.display());
+    debug!("AUR deps to inject: {:?}", deps);
+
+    let mut cmd = Command::new("pkgctl");
+    cmd.arg("build");
+
+    for dep in deps {
+        cmd.arg("-I");
+        cmd.arg(dep.as_path());
+    }
+
+    cmd.current_dir(within)
+        .status()
+        .map_err(|_| Error::PkgctlBuild)?
+        .success()
+        .then_some(())
+        .ok_or(Error::PkgctlBuild)?;
+
+    tarball_paths(within)
+}
+
 /// Build each package specified by the `PKGBUILD` and yield a list of the built
 /// tarballs.
 fn makepkg(within: &Path, nocheck: bool) -> Result<Vec<PathBuf>, Error> {
     let mut cmd = Command::new("makepkg");
-    cmd.arg("-f"); // TODO Remove or rethink
+
+    // TODO Remove or rethink
+    //
+    // 2024-06-12
+    //
+    // Yes, this isn't enough to get around packages that don't want to be
+    // configured more than once.
+    //
+    // 2024-07-01
+    //
+    // The issues is that we _do_ want to leave build artefacts behind in
+    // general to speed up rebuilds.
+    cmd.arg("-f");
 
     if nocheck {
         cmd.arg("--nocheck");
@@ -280,6 +361,10 @@ fn makepkg(within: &Path, nocheck: bool) -> Result<Vec<PathBuf>, Error> {
         .then_some(())
         .ok_or(Error::Makepkg)?;
 
+    tarball_paths(within)
+}
+
+fn tarball_paths(within: &Path) -> Result<Vec<PathBuf>, Error> {
     // NOTE Outputs absolute paths.
     let bytes = Command::new("makepkg")
         .arg("--packagelist")
@@ -291,7 +376,8 @@ fn makepkg(within: &Path, nocheck: bool) -> Result<Vec<PathBuf>, Error> {
     let tarballs = std::str::from_utf8(&bytes)
         .map_err(Error::Utf8)?
         .lines()
-        .map(|line| [line].iter().collect())
+        .map(PathBuf::from)
+        .filter(|path| path.exists())
         .collect();
 
     Ok(tarballs)

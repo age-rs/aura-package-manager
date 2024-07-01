@@ -98,12 +98,22 @@ macro_rules! executable {
 #[macro_export]
 /// Ask for permission to proceed, but with a custom message.
 macro_rules! proceed {
+    ($fll:expr, $msg:expr, $($arg:expr),*) => {{
+        let formatted = format!(
+            "{} [{}/{}] ",
+            i18n_embed_fl::fl!($fll, $msg, $($arg)*),
+            i18n_embed_fl::fl!($fll, "proceed-affirmative-alt"),
+            i18n_embed_fl::fl!($fll, "proceed-negative")
+        );
+        $crate::utils::prompt($fll, &$crate::a!(formatted))
+    }};
     ($fll:expr, $msg:expr) => {{
         let formatted = format!(
-            "{} {} ",
+            "{} [{}/{}] ",
             i18n_embed_fl::fl!($fll, $msg),
-            i18n_embed_fl::fl!($fll, "proceed-yes")
+            i18n_embed_fl::fl!($fll, "proceed-affirmative-alt"),
+            i18n_embed_fl::fl!($fll, "proceed-negative")
         );
-        $crate::utils::prompt(&$crate::a!(formatted))
+        $crate::utils::prompt($fll, &$crate::a!(formatted))
     }};
 }

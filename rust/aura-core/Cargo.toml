@@ -1,6 +1,6 @@
 [package]
 name = "aura-core"
-version = "0.4.0"
+version = "0.6.0"
 authors = ["Colin Woodbury <colin@fosskers.ca>"]
 edition = "2021"
 description = "Core types and logic for extended Arch Linux package managers."
@@ -16,9 +16,9 @@ alpm = "3.0"
 alpm-utils = "3.0"
 disown = "1.0"
 from_variants = "1.0"
-itertools = "0.12"
+itertools = "0.13"
 log = "0.4"
-nonempty-collections = "0.1.4"
+nonempty-collections = "0.2.5"
 petgraph = { version = "0.6", default-features = false }
 r2d2 = "0.8"
 rayon = "1.8"
@@ -27,3 +27,5 @@ serde_json = "1.0"
 srcinfo = "1.1"
 time = { version = "0.3", features = ["serde", "local-offset"] }
 validated = { version = "0.4", features = ["rayon"] }
+versions = "6.3"
+walkdir = "2.5"

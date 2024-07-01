@@ -2,9 +2,10 @@
 
 use crate::env::{Aur, Env};
 use crate::error::Nested;
-use crate::localization::Localised;
+use crate::localization::{code_and_country, identifier_from_locale, Localised};
 use crate::utils::PathStr;
 use crate::{aura, executable, green};
+use alpm::PackageReason;
 use colored::*;
 use from_variants::FromVariants;
 use i18n_embed::fluent::FluentLanguageLoader;
@@ -16,6 +17,7 @@ use std::collections::HashSet;
 use std::ops::Not;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 pub(crate) const GOOD: &str = "✓";
 pub(crate) const WARN: &str = "!";
@@ -55,9 +57,10 @@ pub(crate) fn check(fll: &FluentLanguageLoader, env: &Env) -> Result<(), Error> 
     environment(fll);
     aura_config(fll);
     pacman_config(fll, &env.pacman, &env.aur);
-    makepkg_config(fll);
+    makepkg_config(fll, &env);
     snapshots(fll, &env.backups.snapshots, &caches);
     cache(fll, &alpm, pool, &caches);
+    packages(fll, &alpm);
     green!(fll, "common-done");
 
     Ok(())
@@ -65,10 +68,82 @@ pub(crate) fn check(fll: &FluentLanguageLoader, env: &Env) -> Result<(), Error> 
 
 fn environment(fll: &FluentLanguageLoader) {
     aura!(fll, "check-env");
+    lang(fll);
     editor(fll);
+    java(fll);
     executable!(fll, "git", "check-env-installed", exec = "git");
     executable!(fll, "fd", "check-env-installed", exec = "fd");
     executable!(fll, "rg", "check-env-installed", exec = "rg");
+}
+
+fn java(fll: &FluentLanguageLoader) {
+    match which::which("archlinux-java") {
+        Err(_) => {
+            let msg = fl!(fll, "check-env-java-bin");
+            println!("  [{}] {}", WARN.yellow(), msg);
+            let pkg = "jdk-openjdk".cyan().to_string();
+            let msg = fl!(fll, "check-env-java-bin-fix", pkg = pkg);
+            println!("      └─ {}", msg);
+        }
+        Ok(_) => {
+            let good = crate::utils::cmd_lines("archlinux-java", &["status"])
+                .map(|lines| lines.last().starts_with("No Java environment").not())
+                .unwrap_or(false);
+            let symb = if good { GOOD.green() } else { BAD.red() };
+            println!("  [{}] {}", symb, fl!(fll, "check-env-java-set"));
+
+            if !good {
+                let cmd = "archlinux-java --help".cyan().to_string();
+                let msg = fl!(fll, "check-env-java-set-fix", cmd = cmd);
+                println!("      └─ {}", msg);
+            }
+        }
+    }
+}
+
+fn lang(fll: &FluentLanguageLoader) {
+    match std::env::var("LANG") {
+        Err(_) => {
+            let cmd = "locale -a".cyan().to_string();
+            let msg = fl!(fll, "check-env-lang", cmd = cmd, lang = "???");
+            println!("  [{}] {}", BAD.red(), msg);
+            let msg = fl!(fll, "check-env-lang-fix2");
+            println!("      └─ {}", msg);
+        }
+        Ok(lang) => {
+            let good = crate::utils::cmd_lines("locale", &["-a"])
+                .map(|lines| lines.into_iter().any(|line| same_lang(&lang, &line)))
+                .unwrap_or(false);
+
+            let symb = if good { GOOD.green() } else { BAD.red() };
+            let cmd = "locale -a".cyan().to_string();
+            let msg = fl!(fll, "check-env-lang", cmd = cmd, lang = lang.clone());
+            println!("  [{}] {}", symb, msg);
+
+            if !good {
+                let file = "/etc/locale.gen".cyan().to_string();
+                let lnge = lang.cyan().to_string();
+                let msg = fl!(fll, "check-env-lang-fix", file = file, lang = lnge);
+                println!("      └─ {}", msg);
+            }
+
+            aura_knows_lang(fll, &lang);
+        }
+    }
+}
+
+fn aura_knows_lang(fll: &FluentLanguageLoader, lang: &str) {
+    let good = identifier_from_locale(lang).is_some();
+    let symb = if good { GOOD.green() } else { WARN.yellow() };
+    println!("  [{}] {}", symb, fl!(fll, "check-env-lang-known"));
+}
+
+/// Whether the LANG variable content can be considered the same as a given line
+/// from `locale -a`.
+fn same_lang(lang: &str, locale: &str) -> bool {
+    let ((l0, _), (l1, _)) = (code_and_country(lang), code_and_country(locale));
+
+    l0 == l1
 }
 
 fn editor(fll: &FluentLanguageLoader) {
@@ -78,7 +153,8 @@ fn editor(fll: &FluentLanguageLoader) {
     println!("  [{}] {}", symb, fl!(fll, "check-env-editor"));
 
     if let Ok(e) = edit.as_deref() {
-        executable!(fll, e, "check-env-editor-exec", exec = e);
+        let exec = e.cyan().to_string();
+        executable!(fll, e, "check-env-editor-exec", exec = exec);
     } else {
         executable!(fll, "vi", "check-env-editor-vi");
     }
@@ -91,14 +167,54 @@ fn pacman_config(fll: &FluentLanguageLoader, c: &pacmanconf::Config, a: &Aur) {
     pacnews(fll);
 }
 
-fn makepkg_config(fll: &FluentLanguageLoader) {
+fn makepkg_config(fll: &FluentLanguageLoader, env: &Env) {
     aura!(fll, "check-mconf");
-    packager_set(fll);
+    packager_set(fll, env);
 }
 
 fn aura_config(fll: &FluentLanguageLoader) {
     aura!(fll, "check-aconf");
     parsable_aura_toml(fll);
+    old_aura_dirs(fll);
+    old_aura_conf(fll);
+}
+
+fn old_aura_dirs(fll: &FluentLanguageLoader) {
+    let good = Path::new("/var/cache/aura").is_dir().not();
+    let symbol = if good { GOOD.green() } else { WARN.yellow() };
+    println!("  [{}] {}", symbol, fl!(fll, "check-aconf-old-dirs"));
+
+    if !good {
+        if let Ok(cache) = crate::dirs::aura_xdg_cache() {
+            let old = "/var/cache/aura".bold().yellow().to_string();
+            let new = cache.display().to_string().bold().cyan().to_string();
+            let msg = fl!(fll, "common-replace", old = old, new = new);
+            println!("      └─ {}", msg);
+        }
+    }
+}
+
+fn old_aura_conf(fll: &FluentLanguageLoader) {
+    if let Ok(xdg) = crate::dirs::xdg_config() {
+        let user = xdg.join("aura").join("aura.conf");
+        let files = [Path::new("/etc/aura.conf"), &user];
+        let exists: Vec<_> = files.into_iter().filter(|p| p.is_file()).collect();
+        let good = exists.is_empty();
+        let symbol = if good { GOOD.green() } else { WARN.yellow() };
+        println!("  [{}] {}", symbol, fl!(fll, "check-aconf-old-conf"));
+
+        if let Ok(aura) = crate::dirs::aura_config() {
+            let new = aura.display().to_string().bold().cyan().to_string();
+
+            let len = exists.len();
+            for (i, file) in exists.into_iter().enumerate() {
+                let old = file.display().to_string().bold().yellow().to_string();
+                let msg = fl!(fll, "common-replace", old = old, new = new.as_str());
+                let arrow = if i + 1 == len { "└─" } else { "├─" };
+                println!("      {} {}", arrow, msg);
+            }
+        }
+    }
 }
 
 fn parsable_aura_toml(fll: &FluentLanguageLoader) {
@@ -113,7 +229,7 @@ fn parsable_aura_toml(fll: &FluentLanguageLoader) {
         let symbol = if parsable { GOOD.green() } else { BAD.red() };
         println!("  [{}] {}", symbol, fl!(fll, "check-aconf-aura-parse"));
     } else {
-        let cmd = "aura conf --gen > ~/.config/aura.toml"
+        let cmd = "aura conf --gen > ~/.config/aura/config.toml"
             .bold()
             .cyan()
             .to_string();
@@ -122,18 +238,13 @@ fn parsable_aura_toml(fll: &FluentLanguageLoader) {
     }
 }
 
-fn packager_set(fll: &FluentLanguageLoader) {
-    let (cmd, args) = crate::command::misc::searcher();
-    let good = Command::new(cmd)
-        .args(args)
-        .arg("PACKAGER")
-        .arg("/etc/makepkg.conf")
-        .output()
-        .ok()
-        .map(|o| o.stdout)
-        .and_then(|stdout| String::from_utf8(stdout).ok())
-        .map(|s| s.trim().lines().any(|line| line.starts_with("PACKAGER=")))
-        .unwrap_or(false);
+fn packager_set(fll: &FluentLanguageLoader, env: &Env) {
+    let good = env
+        .makepkg
+        .as_ref()
+        .and_then(|m| m.packager.as_deref())
+        .is_some();
+
     let symbol = if good { GOOD.green() } else { BAD.red() };
     println!("  [{}] {}", symbol, fl!(fll, "check-mconf-packager"));
 
@@ -384,4 +495,58 @@ fn pacnew_work() -> Option<Vec<(PathBuf, u64)>> {
         .collect();
 
     Some(bads)
+}
+
+fn packages(fll: &FluentLanguageLoader, alpm: &Alpm) {
+    aura!(fll, "check-pkgs");
+    old_packages(fll, alpm);
+}
+
+fn old_packages(fll: &FluentLanguageLoader, alpm: &Alpm) {
+    let now = SystemTime::now();
+
+    if let Ok(dur) = now.duration_since(UNIX_EPOCH) {
+        let sec = dur.as_secs();
+
+        let old: Vec<_> = alpm
+            .as_ref()
+            .localdb()
+            .pkgs()
+            .into_iter()
+            // Only consider packages that you explicitly installed...
+            .filter(|p| p.reason() == PackageReason::Explicit)
+            // ...and aren't required by anything.
+            .filter(|p| p.required_by().is_empty())
+            .filter(|p| p.optional_for().is_empty())
+            .filter_map(|p| {
+                p.install_date().and_then(|id| {
+                    let diff = (sec - id as u64) / SECS_IN_DAY;
+                    if diff > 365 {
+                        Some((p, diff))
+                    } else {
+                        None
+                    }
+                })
+            })
+            .collect();
+
+        let good = old.is_empty();
+        let symb = if good { GOOD.green() } else { WARN.yellow() };
+        println!("  [{}] {}", symb, fl!(fll, "check-pkgs-old"));
+
+        let len = old.len();
+        for (i, (p, diff)) in old.into_iter().enumerate() {
+            let pkg = p.name().cyan().to_string();
+
+            let day = if diff < 365 * 2 {
+                diff.to_string().yellow().to_string()
+            } else {
+                diff.to_string().red().to_string()
+            };
+
+            let msg = fl!(fll, "check-pkgs-old-warn", pkg = pkg, days = day);
+            let arrow = if i + 1 == len { "└─" } else { "├─" };
+            println!("      {} {}", arrow, msg);
+        }
+    }
 }

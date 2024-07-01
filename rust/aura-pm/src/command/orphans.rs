@@ -1,5 +1,6 @@
 //! All functionality involving the `-O` command.
 
+use crate::env::Env;
 use crate::error::Nested;
 use crate::green;
 use crate::localization::Localised;
@@ -18,7 +19,6 @@ use std::ops::Not;
 pub(crate) enum Error {
     #[from_variants(skip)]
     SetExplicit(String, alpm::Error),
-    Readline(rustyline::error::ReadlineError),
     Sudo(crate::utils::SudoError),
     NoneExist,
     Removal(crate::pacman::Error),
@@ -28,7 +28,6 @@ impl Nested for Error {
     fn nested(&self) {
         match self {
             Error::SetExplicit(_, e) => error!("{e}"),
-            Error::Readline(e) => error!("{e}"),
             Error::Sudo(e) => e.nested(),
             Error::NoneExist => {}
             Error::Removal(e) => e.nested(),
@@ -39,7 +38,6 @@ impl Nested for Error {
 impl Localised for Error {
     fn localise(&self, fll: &FluentLanguageLoader) -> String {
         match self {
-            Error::Readline(_) => fl!(fll, "err-user-input"),
             Error::Sudo(e) => e.localise(fll),
             Error::NoneExist => fl!(fll, "err-none-exist"),
             Error::SetExplicit(p, _) => fl!(fll, "O-explicit-err", pkg = p.as_str()),
@@ -62,12 +60,13 @@ pub(crate) fn elderly(alpm: &Alpm) {
 
 /// Sets a package's install reason to "as explicit". An alias for `-D --asexplicit`.
 pub(crate) fn adopt(
+    env: &Env,
     alpm: &Alpm,
     fll: &FluentLanguageLoader,
     // TODO 2024-03-18 Make this NEVec.
     packages: Vec<String>,
 ) -> Result<(), Error> {
-    crate::utils::sudo()?;
+    crate::utils::sudo(env)?;
 
     let db = alpm.as_ref().localdb();
     let reals: Vec<_> = packages
@@ -93,14 +92,14 @@ pub(crate) fn adopt(
 ///
 /// Will fail if the process does not have permission to create the lockfile,
 /// which usually lives in a root-owned directory.
-pub(crate) fn remove(alpm: &Alpm, fll: &FluentLanguageLoader) -> Result<(), Error> {
+pub(crate) fn remove(env: &Env, alpm: &Alpm, fll: &FluentLanguageLoader) -> Result<(), Error> {
     let orphans: Vec<_> = aura_core::orphans(alpm).collect();
 
     if orphans.is_empty().not() {
         orphans
             .iter()
             .map(|p| p.name())
-            .apply(|names| crate::pacman::sudo_pacman("-Rsu", NOTHING, names))
+            .apply(|names| crate::pacman::sudo_pacman(env, "-Rsu", NOTHING, names))
             .map_err(Error::Removal)?;
 
         green!(fll, "common-done");
